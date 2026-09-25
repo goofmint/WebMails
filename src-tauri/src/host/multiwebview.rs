@@ -79,7 +79,16 @@ impl<B: ProfileBackend> MultiwebviewHost<B> {
         let content = current_content_rect(&window)?;
 
         let shell_rect = layout::shell_rect(content.height);
-        let shell_builder = apply_common_settings(WebviewBuilder::new(SHELL_LABEL, shell_url));
+        // Tauri's native file drag-drop handler otherwise intercepts drag
+        // events before the page sees them, which silently breaks the
+        // sidebar's HTML5 drag-and-drop reorder (Task 1.10) — notably on
+        // Windows, where `WebviewBuilder::disable_drag_drop_handler`'s own
+        // doc comment calls this out as required for HTML5 DnD. Applied to
+        // the shell only, not via `apply_common_settings` (shared with
+        // every `svc-<id>` webview below), since service pages still need
+        // Tauri's native handler for e.g. dropped attachments.
+        let shell_builder = apply_common_settings(WebviewBuilder::new(SHELL_LABEL, shell_url))
+            .disable_drag_drop_handler();
         let shell = window
             .add_child(shell_builder, to_position(shell_rect), to_size(shell_rect))
             .map_err(AppError::from)?;

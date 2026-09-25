@@ -65,6 +65,12 @@ For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/
 - [ ] `select_service` moves the target service's webview into the content area and emits `select-service` (`{ serviceId }`) observable from the `shell` webview only (macOS)
 - [ ] Same, Windows 11
 
+### Task 1.10 — Shell store and sidebar
+
+For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/fail, with notes) before checking it off.
+
+- [ ] Drag-and-drop reorder works in the real shell (macOS/Windows)
+
 ## M2 — Unread
 
 Exit criterion (SPEC §16): N Gmail accounts plus iCloud show live counts while the window is in the background.

@@ -1,12 +1,13 @@
-//! `get_snapshot`'s response DTO and its pure assembly (Task 1.9;
-//! design.md §2.2.12: `{ settings, services[], statuses, sidebarWidth,
-//! configError? }`).
+//! `get_snapshot`'s response DTO and its pure assembly (Task 1.9, extended
+//! by Task 1.10 with `activeServiceId`; design.md §2.2.12: `{ settings,
+//! services[], statuses, sidebarWidth, activeServiceId, configError? }`).
 //!
 //! Only this DTO's own top-level keys are camelCase (`sidebarWidth`,
-//! `configError`) — the nested `settings`/`services`/`configError` values
-//! reuse [`Settings`]/[`ServiceConfig`]/[`ConfigError`] exactly as they
-//! already serialize elsewhere (snake_case field names), per the
-//! implementation plan's instruction not to touch those existing models.
+//! `activeServiceId`, `configError`) — the nested
+//! `settings`/`services`/`configError` values reuse
+//! [`Settings`]/[`ServiceConfig`]/[`ConfigError`] exactly as they already
+//! serialize elsewhere (snake_case field names), per the implementation
+//! plan's instruction not to touch those existing models.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -34,28 +35,36 @@ pub struct SnapshotDto {
     pub statuses: BTreeMap<ServiceId, ServiceStatus>,
     #[serde(rename = "sidebarWidth")]
     pub sidebar_width: f64,
+    /// The currently active service, or `None` — always present (unlike
+    /// `config_error`, no `skip_serializing_if`), serializing to `null`
+    /// when there is none (Task 1.10; `ServiceManager::Ready::active`,
+    /// `None` in the `Failed` state too).
+    #[serde(rename = "activeServiceId")]
+    pub active_service_id: Option<ServiceId>,
     #[serde(rename = "configError", skip_serializing_if = "Option::is_none")]
     pub config_error: Option<ConfigError>,
 }
 
 /// Pure assembly of [`SnapshotDto`] from its parts — [`crate::services::
 /// ServiceManager::snapshot`] supplies `settings`/`services`/`config_error`/
-/// `statuses`, and the `get_snapshot` command supplies `sidebar_width`
-/// (`host::layout::SIDEBAR_WIDTH`, design.md §2.2.4) — kept separate from
-/// both so it is unit-testable without a running `ServiceManager` or
-/// Tauri app.
+/// `statuses`/`active_service_id`, and the `get_snapshot` command supplies
+/// `sidebar_width` (`host::layout::SIDEBAR_WIDTH`, design.md §2.2.4) — kept
+/// separate from both so it is unit-testable without a running
+/// `ServiceManager` or Tauri app.
 pub fn build_snapshot(
     settings: Option<Settings>,
     services: Vec<ServiceConfig>,
     config_error: Option<ConfigError>,
     statuses: HashMap<ServiceId, ServiceStatus>,
     sidebar_width: f64,
+    active_service_id: Option<ServiceId>,
 ) -> SnapshotDto {
     SnapshotDto {
         settings,
         services,
         statuses: statuses.into_iter().collect(),
         sidebar_width,
+        active_service_id,
         config_error,
     }
 }
@@ -95,6 +104,7 @@ mod tests {
             None,
             HashMap::new(),
             64.0,
+            None,
         );
         let value = serde_json::to_value(&dto).expect("serialize");
 
@@ -112,7 +122,7 @@ mod tests {
             key: Some("services[0].url".to_string()),
             reason: "invalid scheme".to_string(),
         };
-        let dto = build_snapshot(None, Vec::new(), Some(error), HashMap::new(), 64.0);
+        let dto = build_snapshot(None, Vec::new(), Some(error), HashMap::new(), 64.0, None);
         let value = serde_json::to_value(&dto).expect("serialize");
 
         assert_eq!(value["settings"], json!(null));
@@ -127,7 +137,14 @@ mod tests {
 
     #[test]
     fn config_error_is_omitted_entirely_rather_than_serialized_as_null() {
-        let dto = build_snapshot(Some(settings()), Vec::new(), None, HashMap::new(), 64.0);
+        let dto = build_snapshot(
+            Some(settings()),
+            Vec::new(),
+            None,
+            HashMap::new(),
+            64.0,
+            None,
+        );
         let value = serde_json::to_value(&dto).expect("serialize");
         let obj = value.as_object().expect("object");
         assert!(!obj.contains_key("configError"));
@@ -145,7 +162,7 @@ mod tests {
             ServiceStatus::Ok { count: 3 },
         );
 
-        let dto = build_snapshot(Some(settings()), Vec::new(), None, statuses, 64.0);
+        let dto = build_snapshot(Some(settings()), Vec::new(), None, statuses, 64.0, None);
         let value = serde_json::to_value(&dto).expect("serialize");
 
         assert_eq!(value["statuses"]["gmail"], json!({ "kind": "loading" }));
@@ -153,5 +170,35 @@ mod tests {
             value["statuses"]["outlook"],
             json!({ "kind": "ok", "count": 3 })
         );
+    }
+
+    #[test]
+    fn active_service_id_serializes_as_the_id_string_when_present() {
+        let dto = build_snapshot(
+            Some(settings()),
+            vec![service()],
+            None,
+            HashMap::new(),
+            64.0,
+            Some(ServiceId::new("gmail").expect("valid id")),
+        );
+        let value = serde_json::to_value(&dto).expect("serialize");
+        assert_eq!(value["activeServiceId"], json!("gmail"));
+    }
+
+    #[test]
+    fn active_service_id_serializes_as_null_and_is_always_present_when_absent() {
+        let dto = build_snapshot(
+            Some(settings()),
+            vec![service()],
+            None,
+            HashMap::new(),
+            64.0,
+            None,
+        );
+        let value = serde_json::to_value(&dto).expect("serialize");
+        let obj = value.as_object().expect("object");
+        assert!(obj.contains_key("activeServiceId"));
+        assert_eq!(value["activeServiceId"], json!(null));
     }
 }
