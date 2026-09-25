@@ -31,4 +31,4 @@ Run from the repository root:
 
 The Tauri desktop app itself (`pnpm tauri dev` / `pnpm tauri build`) is run by the project owner manually; it is not run as part of CI or by automated agents.
 
-Rust embeds the agent bundle with `include_str!` (`src-tauri/src/agent.rs`), so run `pnpm build:agent` at least once before any `cargo` command (`cargo build`, `cargo clippy`, `cargo test`, …) — otherwise the Rust build fails because `src-tauri/agent-dist/agent.js` does not exist.
+Rust embeds the agent bundle with `include_str!` (`src-tauri/src/agent.rs`), so run `pnpm build:agent` at least once before any Cargo command that compiles the crate (`cargo build`, `cargo clippy`, `cargo test`) — otherwise the Rust build fails because `src-tauri/agent-dist/agent.js` does not exist.
