@@ -170,11 +170,19 @@ impl<B: ProfileBackend + Send + Sync> WebviewHost for MultiwebviewHost<B> {
 
     fn destroy(&self, id: &ServiceId) -> AppResult<()> {
         let mut registry = self.lock()?;
-        let webview = registry.webviews.remove(id).ok_or_else(|| unknown_id(id))?;
+        // Close first: if closing fails, the registry still tracks the
+        // webview, so the caller can retry or report it.
+        registry
+            .webviews
+            .get(id)
+            .ok_or_else(|| unknown_id(id))?
+            .close()
+            .map_err(AppError::from)?;
+        registry.webviews.remove(id);
         if registry.active.as_ref() == Some(id) {
             registry.active = None;
         }
-        webview.close().map_err(AppError::from)
+        Ok(())
     }
 
     fn reload(&self, id: &ServiceId) -> AppResult<()> {
