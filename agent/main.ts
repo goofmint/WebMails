@@ -2,19 +2,13 @@
 // Implements the startup sequence in design.md §2.2.14 ("Entry"), steps 1-6.
 import type { ElumaBootstrap } from "./global";
 import { matchRecipe } from "./recipes/registry";
-import type { RecipeContext, SameOriginFetch } from "./recipes/types";
+import type { RecipeContext } from "./recipes/types";
 import type { Clock, RandomSource, Scheduler } from "./core/clock";
 import { systemClock } from "./core/clock";
 import { createReporter, defaultInvoke } from "./core/report";
 import type { ReportInvoke } from "./core/report";
 import { startLoop } from "./core/loop";
-
-// `RecipeContext.fetch` scoped to the service's own origin. The real
-// `SameOriginFetch` implementation lands in Task 2.6; until then any
-// recipe that calls `ctx.fetch()` gets a clearly-labelled rejection instead
-// of a fake/working fetch.
-const notImplementedFetch: SameOriginFetch = () =>
-  Promise.reject(new Error("[eluma-agent] SameOriginFetch is not implemented until Task 2.6"));
+import { createSameOriginFetch } from "./strategies/fetch";
 
 // The slice of `Window` that bootstrapAgent actually needs. The real
 // `window` structurally satisfies this, so `bootstrapAgent(window)` below
@@ -25,6 +19,7 @@ export interface AgentWindow {
   __ELUMA__?: ElumaBootstrap;
   readonly location: { readonly origin: string };
   readonly document: Document;
+  readonly fetch: typeof fetch;
 }
 
 function isElumaBootstrap(value: AgentWindow["__ELUMA__"]): value is ElumaBootstrap {
@@ -103,7 +98,7 @@ export function bootstrapAgent(win: AgentWindow, deps: BootstrapDeps = {}): void
   const context: RecipeContext = {
     serviceUrl,
     document: win.document,
-    fetch: notImplementedFetch,
+    fetch: createSameOriginFetch(serviceUrl, win.fetch.bind(win)),
   };
 
   const report = createReporter({
