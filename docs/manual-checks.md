@@ -71,6 +71,20 @@ Exit criterion (SPEC §16): N Gmail accounts plus iCloud show live counts while 
 
 - [ ] With N Gmail accounts and iCloud configured at the same time, every service shows a live count while the window is in the background
 
+### Task 2.2 — Runtime capability and agent injection
+
+For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/fail, with notes) before checking it off. The agent (`agent/main.ts`) is still a placeholder that only logs on load as of this task (Task 2.4 implements the real agent) — these checks call `report_unread` by hand from DevTools, standing in for the agent.
+
+- [ ] With a real service configured (e.g. Gmail or iCloud) and its webview created, that webview's own DevTools console has `window.__ELUMA__` present right after load, shaped as `{ serviceId, serviceUrl, reportIntervalMs: 30000, reconcileIntervalMs }` (design.md §2.2.6) (macOS)
+- [ ] Same `window.__ELUMA__` shape check (Windows 11)
+- [ ] From that same service webview's DevTools console, `window.__TAURI_INTERNALS__.invoke('report_unread', { report: { serviceId: '<that service's id>', count: 1, messages: [], recipeId: 'generic', observedAt: Date.now(), iconCandidates: [] } })` resolves, and Rust's log (stderr in dev, or `{data_dir}/logs/`) shows a debug line `accepted unread report` naming that service id (macOS)
+- [ ] Same successful invoke and matching debug log line (Windows 11)
+- [ ] The same invoke from the **shell** webview's own DevTools console (not a service's) is rejected — `shell` is not a `svc-<id>` webview and holds no runtime capability for `report_unread` (macOS)
+- [ ] Same shell-origin rejection (Windows 11)
+- [ ] Navigate a service's webview to a different origin (e.g. an outbound link), then repeat the invoke from that webview's DevTools console. It is rejected, since the granted capability's origin pattern no longer matches (macOS; mechanism confirmed by `docs/spikes/SP3.md`'s B2)
+- [ ] Same off-origin rejection after navigation (Windows 11)
+- [ ] The agent does not run inside an embedded `<iframe>` on the service page — record as not applicable for this task, since the frame guard is Task 2.4's job and the placeholder agent does nothing frame-aware yet
+
 ## M3 — Background survival
 
 Exit criterion (SPEC §16): badges still correct after 2 hours minimised, on both platforms — or the Windows story is honestly documented as degraded.

@@ -2,12 +2,13 @@
 //! implements the `report_unread` command and its validation (design.md
 //! §2.2.6, §1.3).
 //!
-//! Only the `report_unread` command (Task 2.1) lives here so far. The
-//! injection script and per-service runtime capability (design.md
-//! §2.2.6's `CapabilityBuilder` example) are Task 2.2's job — this
-//! module does not touch `capabilities/default.json` (the static shell
-//! capability) at all.
+//! The `report_unread` command (Task 2.1) and the runtime capability /
+//! injection-script building [`capability`] adds (Task 2.2) both live
+//! here. This module does not touch `capabilities/default.json` (the
+//! static shell capability) at all — only runtime capabilities added via
+//! [`capability::ensure_capability`].
 
+pub mod capability;
 mod dto;
 mod validate;
 
