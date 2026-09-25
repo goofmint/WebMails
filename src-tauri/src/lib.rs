@@ -4,24 +4,17 @@ pub mod error;
 pub mod host;
 pub mod paths;
 pub mod profile;
+pub mod services;
 pub mod state;
+
+use std::sync::Arc;
 
 use tauri::{Manager, WebviewUrl};
 
-use config::{ProfileName, ServiceId};
-use host::{build_main_host, layout, ServiceWebviewSpec};
+use host::{build_main_host, layout};
 use profile::PlatformProfileBackend;
-use state::State;
-
-/// Fixed identifier and public URL for the one hard-coded service this
-/// task creates at startup, so the content area shows something real
-/// before service configuration exists.
-///
-/// Task 1.8 replaces this block with services built from `Config.services`
-/// (design.md §2.2.5); this constant pair and the code that uses it go
-/// away then.
-const TEST_SERVICE_ID: &str = "test-service";
-const TEST_SERVICE_URL: &str = "https://example.com";
+use services::ServiceManager;
+use state::StateStore;
 
 /// Reads `window`'s current physical size and scale factor and converts
 /// them to a logical [`layout::content_rect`], the same conversion
@@ -127,31 +120,66 @@ pub fn run() {
                 }
             });
 
-            // One hard-coded test service, so M1 shows the shell plus a
-            // real webview in the content area before service
-            // configuration (Task 1.8) exists. The default profile's UUID
-            // is resolved the same way a real service's will be — via
-            // `profile::resolve` — but against an in-memory `State::empty()`
-            // rather than the persisted store, since state persistence
-            // isn't wired into startup yet (a later task).
-            let default_profile = ProfileName::new("default")?;
-            let test_service_id = ServiceId::new(TEST_SERVICE_ID)?;
-            let mut scratch_state = State::empty();
-            let profile_uuid =
-                profile::resolve(&default_profile, &test_service_id, &mut scratch_state);
+            // Resolve `config.toml` / `state.json` (never hard-coded —
+            // `paths.rs`), load or initialize them, and build the
+            // `ServiceManager` that owns every service webview from here
+            // on (design.md §2.2.5). A second, independent
+            // `PlatformProfileBackend` is built for the manager: the one
+            // above was already moved into `MultiwebviewHost::new`, and
+            // the type has no `Clone` impl to share one between them.
+            let config_dir = paths::config_dir(app)?;
+            let config_path = paths::config_file(&config_dir);
+            let data_dir = paths::data_dir(app)?;
+            let state_path = paths::state_file(&data_dir);
+            let manager_profile_backend = PlatformProfileBackend::new(app.handle())?;
 
-            host.create(ServiceWebviewSpec {
-                id: test_service_id.clone(),
-                url: TEST_SERVICE_URL.parse()?,
-                profile: profile_uuid,
-                init_script: String::new(),
-                on_page_load: Box::new(|_webview, _payload| {}),
-            })?;
-            host.activate(&test_service_id)?;
+            // On either failure, no services are started, the file is
+            // never repaired or overwritten, and the error is kept on the
+            // manager (logged here at error level) for a later command
+            // (Task 1.9) to surface to the shell.
+            let manager: Arc<ServiceManager> = match config::load_or_init(&config_path) {
+                Ok(loaded_config) => match StateStore::open(state_path) {
+                    Ok(state) => Arc::new(ServiceManager::ready(
+                        host.clone(),
+                        manager_profile_backend,
+                        app.handle().clone(),
+                        config_path,
+                        loaded_config,
+                        state,
+                    )),
+                    Err(err) => {
+                        tracing::error!("failed to open state store: {err}");
+                        Arc::new(ServiceManager::failed(
+                            host.clone(),
+                            manager_profile_backend,
+                            app.handle().clone(),
+                            config_path,
+                            err,
+                        ))
+                    }
+                },
+                Err(err) => {
+                    tracing::error!("failed to load configuration: {err}");
+                    Arc::new(ServiceManager::failed(
+                        host.clone(),
+                        manager_profile_backend,
+                        app.handle().clone(),
+                        config_path,
+                        err.into(),
+                    ))
+                }
+            };
 
-            // Initial relayout, so the shell, the test service, and any
-            // resize that happened between window creation and here all
-            // agree on the current content rect.
+            app.manage(manager.clone());
+            // Spawns staggered service creation in the background
+            // (`tauri::async_runtime`) and returns immediately; this hook
+            // never blocks on it.
+            ServiceManager::start(manager);
+
+            // Initial relayout, so the shell and any service the
+            // background startup task has already created by the time
+            // this runs — plus any resize that happened between window
+            // creation and here — all agree on the current content rect.
             let content = current_content_rect(&window)?;
             host.relayout(content)?;
 

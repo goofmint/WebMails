@@ -14,4 +14,5 @@ mod key;
 #[cfg(any(target_os = "macos", windows))]
 pub use backend::PlatformProfileBackend;
 pub use backend::{remove_webview_data_dir, webview_data_dir, ProfileBackend};
+pub(crate) use key::derive_key;
 pub use key::{resolve, ProfileKey};
