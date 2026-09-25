@@ -11,6 +11,7 @@
 //! existing service ids.
 
 use std::path::Path;
+use std::sync::Mutex;
 
 use toml_edit::{Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table, Value};
 use url::Url;
@@ -58,6 +59,11 @@ pub struct SettingsPatch {
     pub badge_sidebar: Option<bool>,
 }
 
+/// Serializes every [`apply`] in the process, from the read through the
+/// atomic write, so two concurrent edits cannot overwrite each other or
+/// share a temporary file.
+static APPLY_LOCK: Mutex<()> = Mutex::new(());
+
 /// Applies `edit` to the configuration file at `path` and writes the
 /// result back atomically (design.md §2.2.1).
 ///
@@ -69,6 +75,12 @@ pub struct SettingsPatch {
 /// names an unknown service id or a non-permutation reorder, or an edited
 /// document that fails validation (e.g. `AddService` with a duplicate id).
 pub fn apply(path: &Path, edit: ConfigEdit) -> Result<Config, ConfigError> {
+    let _guard = APPLY_LOCK.lock().map_err(|_| ConfigError {
+        file: path.to_path_buf(),
+        key: None,
+        reason: "config edit lock poisoned by an earlier failed edit".to_string(),
+    })?;
+
     let text = std::fs::read_to_string(path).map_err(|err| super::io_error(path, err))?;
 
     // The file must already be valid before any edit is applied.
@@ -501,6 +513,33 @@ icon = { source = "url", value = "https://gamma.example.com/icon.png" }  # gamma
         let on_disk = fs::read_to_string(&path).expect("read back");
         assert_eq!(on_disk, expected);
         assert_eq!(load(&path).expect("reload"), result);
+    }
+
+    #[test]
+    fn concurrent_adds_are_all_kept() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = config_path(&dir);
+        write_initial(&path).expect("write_initial should succeed");
+
+        let handles: Vec<_> = (0..8)
+            .map(|n| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let svc = service(
+                        &format!("svc-{n}"),
+                        "Svc",
+                        "https://svc.example.com/",
+                        "default",
+                    );
+                    apply(&path, ConfigEdit::AddService(svc)).expect("add should succeed");
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().expect("thread should not panic");
+        }
+
+        assert_eq!(load(&path).expect("reload").services.len(), 8);
     }
 
     #[test]
