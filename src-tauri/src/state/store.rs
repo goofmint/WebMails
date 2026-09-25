@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use crate::error::{AppError, AppResult};
 
-use super::model::State;
+use super::model::{State, SEEN_RING_CAPACITY};
 
 /// How often [`StateStore`] writes its state to disk in the background, at
 /// most (design.md §2.2.2: "at most once per second").
@@ -49,6 +49,18 @@ pub fn load(path: &Path) -> AppResult<State> {
 /// `path`. A serialization failure is `AppError::State`; any I/O failure is
 /// `AppError::Io`.
 pub fn save_atomic(path: &Path, state: &State) -> AppResult<()> {
+    if let Some((id, ring)) = state
+        .seen
+        .iter()
+        .find(|(_, ring)| ring.0.len() > SEEN_RING_CAPACITY)
+    {
+        return Err(AppError::State(format!(
+            "{}: seen ring for `{}` has {} ids, over the capacity of {SEEN_RING_CAPACITY}",
+            path.display(),
+            id.as_str(),
+            ring.0.len()
+        )));
+    }
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -217,6 +229,7 @@ impl StateStore {
                 if let Ok(mut flags) = self.inner.flags.lock() {
                     flags.dirty = true;
                 }
+                self.inner.condvar.notify_all();
                 Err(err)
             }
         }
@@ -491,6 +504,23 @@ mod tests {
         let err = load(&path).expect_err("should fail");
         assert_eq!(err.kind(), "state");
         assert_eq!(fs::read(&path).expect("read"), original);
+    }
+
+    #[test]
+    fn save_rejects_an_over_capacity_seen_ring_and_writes_nothing() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let mut state = State::empty();
+        let ring = crate::state::model::SeenRing(
+            (0..=SEEN_RING_CAPACITY).map(|n| n.to_string()).collect(),
+        );
+        state
+            .seen
+            .insert(ServiceId::new("svc-1").expect("valid id"), ring);
+
+        let err = save_atomic(&path, &state).expect_err("over-capacity ring must be rejected");
+        assert_eq!(err.kind(), "state");
+        assert!(!path.exists());
     }
 
     // --- StateStore ------------------------------------------------------
