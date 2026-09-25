@@ -32,6 +32,7 @@ use std::time::Duration;
 use tauri::async_runtime::Mutex;
 use tauri::{AppHandle, Emitter, Wry};
 use url::Url;
+use uuid::Uuid;
 
 use crate::config::{self, Config, ConfigEdit, IconSource, ProfileName, ServiceConfig, ServiceId};
 use crate::error::{AppError, AppResult};
@@ -192,16 +193,8 @@ impl ServiceManager {
         for (index, id) in pending.into_iter().enumerate() {
             match self.create_one(&id).await {
                 Ok(()) => {
-                    if !activated_first && self.is_created(&id).await {
-                        match self.host.activate(&id) {
-                            Ok(()) => {
-                                self.set_active(&id).await;
-                                activated_first = true;
-                            }
-                            Err(err) => tracing::error!(
-                                "failed to activate first started service '{id}': {err}"
-                            ),
-                        }
+                    if !activated_first {
+                        activated_first = self.activate_first_at_startup(&id).await;
                     }
                 }
                 Err(err) => {
@@ -215,15 +208,45 @@ impl ServiceManager {
         }
     }
 
-    async fn is_created(&self, id: &ServiceId) -> bool {
-        let guard = self.inner.lock().await;
-        matches!(&*guard, ManagerState::Ready(ready) if ready.created.contains(id))
-    }
-
-    async fn set_active(&self, id: &ServiceId) {
+    /// Decides and performs first-service activation for a just-created
+    /// `id`, both under one `self.inner` lock — unlike the previous
+    /// separate `is_created` check / `host.activate` call / `set_active`
+    /// write, which raced against any other lock-holding operation
+    /// (e.g. a concurrent edit) that could run in between and clobber
+    /// `active`.
+    ///
+    /// Activates `id` only if `ready.active` is still `None` (nothing —
+    /// startup or otherwise, e.g. a future explicit selection — has
+    /// claimed it yet) and `id` actually has a webview. If `active` is
+    /// already `Some`, that existing choice is left untouched.
+    ///
+    /// Returns `true` once the first-activation attempt is settled for
+    /// good — either because a service (this one or another) is already
+    /// active, or because activating `id` just succeeded — so
+    /// `run_startup` stops trying later services either way. Returns
+    /// `false` only when `id` was not eligible to activate (not created,
+    /// e.g. removed by a concurrent edit before its turn) or activation
+    /// failed, so `run_startup` keeps trying the next created service.
+    async fn activate_first_at_startup(&self, id: &ServiceId) -> bool {
         let mut guard = self.inner.lock().await;
-        if let ManagerState::Ready(ready) = &mut *guard {
-            ready.active = Some(id.clone());
+        let ManagerState::Ready(ready) = &mut *guard else {
+            return false;
+        };
+        if ready.active.is_some() {
+            return true;
+        }
+        if !ready.created.contains(id) {
+            return false;
+        }
+        match self.host.activate(id) {
+            Ok(()) => {
+                ready.active = Some(id.clone());
+                true
+            }
+            Err(err) => {
+                tracing::error!("failed to activate first started service '{id}': {err}");
+                false
+            }
         }
     }
 
@@ -555,7 +578,15 @@ impl ServiceManager {
             let ManagerState::Ready(ready) = &*guard else {
                 return Ok(());
             };
-            match ready.state.read(|state| state.profiles.get(&key).copied()) {
+            let lookup = ready.state.read(|state| {
+                let uuid = state.profiles.get(&key).copied()?;
+                if uuid_still_in_use(&ready.config.services, &state.profiles, uuid) {
+                    None
+                } else {
+                    Some(uuid)
+                }
+            });
+            match lookup {
                 Ok(uuid) => uuid,
                 Err(err) => {
                     tracing::warn!("failed to read profile uuid for service '{id}': {err}");
@@ -564,8 +595,12 @@ impl ServiceManager {
             }
         };
         let Some(uuid) = uuid else {
-            // Never resolved (the service was removed before it was ever
-            // created), so there is nothing on disk to remove.
+            // Either never resolved (the service was removed before it was
+            // ever created, so there is nothing on disk to remove), or a
+            // remaining service (e.g. one re-added under the same id,
+            // still `isolated`, before this call reached this point) now
+            // resolves to the same uuid — either way, the data store must
+            // be left in place.
             return Ok(());
         };
 
@@ -595,4 +630,101 @@ fn not_ready(startup_error: &AppError) -> AppError {
     AppError::Config(format!(
         "service manager did not start (config or state failed to load): {startup_error}"
     ))
+}
+
+/// Whether `uuid` — the on-disk profile data store [`ServiceManager::
+/// remove_service`] is about to delete — is still resolved to by any
+/// service in `services`, given the current `profiles` map (design.md
+/// §2.2.3). Each service's own profile key is derived the same way
+/// [`profile::resolve`] does, without mutating `profiles`.
+///
+/// Guards against deleting data a remaining service still points at —
+/// e.g. one re-added under the same id (still naming `"isolated"`)
+/// between the config edit that removed the original service and this
+/// check, which would otherwise resolve to the same stale
+/// `state.profiles` entry.
+fn uuid_still_in_use(
+    services: &[ServiceConfig],
+    profiles: &BTreeMap<ProfileKey, Uuid>,
+    uuid: Uuid,
+) -> bool {
+    services.iter().any(|service| {
+        let key = profile::derive_key(&service.profile, &service.id);
+        profiles.get(&key) == Some(&uuid)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::IconSource;
+
+    fn service_id(value: &str) -> ServiceId {
+        ServiceId::new(value).expect("valid service id")
+    }
+
+    fn profile_name(value: &str) -> ProfileName {
+        ProfileName::new(value).expect("valid profile name")
+    }
+
+    /// A distinct, deterministic `Uuid` for test fixtures (the `uuid`
+    /// crate's `v4` feature is not enabled, so `Uuid::new_v4` is
+    /// unavailable here).
+    fn test_uuid(seed: u8) -> Uuid {
+        Uuid::from_bytes([seed; 16])
+    }
+
+    fn service(id: &str, profile: &str) -> ServiceConfig {
+        ServiceConfig {
+            id: service_id(id),
+            name: id.to_string(),
+            url: Url::parse("https://example.com").expect("valid url"),
+            profile: profile_name(profile),
+            notifications: false,
+            icon: IconSource::Favicon,
+        }
+    }
+
+    // --- uuid_still_in_use ------------------------------------------------
+
+    #[test]
+    fn not_in_use_when_no_remaining_service_resolves_to_it() {
+        let services = vec![service("mail", "default"), service("chat", "isolated")];
+        let mut profiles = BTreeMap::new();
+        profiles.insert(ProfileKey::Default, test_uuid(1));
+        profiles.insert(ProfileKey::Isolated(service_id("chat")), test_uuid(2));
+
+        let removed_uuid = test_uuid(3);
+        assert!(!uuid_still_in_use(&services, &profiles, removed_uuid));
+    }
+
+    #[test]
+    fn in_use_when_a_remaining_service_resolves_to_it() {
+        // The removed service's old id was reused by a newly added
+        // service, still naming `isolated`, before the on-disk removal
+        // ran — so it now resolves to the very uuid about to be deleted.
+        let reused_id = "gmail";
+        let services = vec![service(reused_id, "isolated")];
+        let uuid = test_uuid(4);
+        let mut profiles = BTreeMap::new();
+        profiles.insert(ProfileKey::Isolated(service_id(reused_id)), uuid);
+
+        assert!(uuid_still_in_use(&services, &profiles, uuid));
+    }
+
+    #[test]
+    fn not_in_use_when_services_list_is_empty() {
+        let profiles = BTreeMap::new();
+        assert!(!uuid_still_in_use(&[], &profiles, test_uuid(5)));
+    }
+
+    #[test]
+    fn in_use_when_a_shared_named_profile_matches() {
+        let uuid = test_uuid(6);
+        let services = vec![service("mail", "work"), service("chat", "work")];
+        let mut profiles = BTreeMap::new();
+        profiles.insert(ProfileKey::Named(profile_name("work")), uuid);
+
+        assert!(uuid_still_in_use(&services, &profiles, uuid));
+    }
 }

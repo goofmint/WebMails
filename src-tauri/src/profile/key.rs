@@ -124,7 +124,7 @@ impl<'de> Deserialize<'de> for ProfileKey {
 
 /// Derives `(name, service)`'s canonical [`ProfileKey`] (design.md §2.2.3),
 /// without touching `state`.
-fn derive_key(name: &ProfileName, service: &ServiceId) -> ProfileKey {
+pub(crate) fn derive_key(name: &ProfileName, service: &ServiceId) -> ProfileKey {
     match name.as_str() {
         "default" => ProfileKey::Default,
         "isolated" => ProfileKey::Isolated(service.clone()),
