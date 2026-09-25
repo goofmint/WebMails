@@ -298,13 +298,14 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
+    use crate::config::{ProfileName, ServiceId};
     use tempfile::tempdir;
     use uuid::Uuid;
 
     fn sample_state() -> State {
         let mut profiles = BTreeMap::new();
         profiles.insert(
-            "default".to_string(),
+            ProfileName::new("default").expect("valid profile"),
             Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
         );
         State {
@@ -410,6 +411,18 @@ mod tests {
         assert_eq!(fs::read(&path).expect("read"), original);
     }
 
+    #[test]
+    fn load_invalid_service_id_key_is_state_error_and_leaves_file_unchanged() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let original = br#"{"profiles":{},"seen":{"Not Valid":[]},"staleness":{}}"#.to_vec();
+        fs::write(&path, &original).expect("write");
+
+        let err = load(&path).expect_err("should fail");
+        assert_eq!(err.kind(), "state");
+        assert_eq!(fs::read(&path).expect("read"), original);
+    }
+
     // --- StateStore ------------------------------------------------------
 
     fn short_interval() -> Duration {
@@ -435,7 +448,7 @@ mod tests {
         store
             .update(|s| {
                 s.profiles.insert(
-                    "default".to_string(),
+                    ProfileName::new("default").expect("valid profile"),
                     Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap(),
                 );
             })
@@ -446,7 +459,9 @@ mod tests {
         let in_memory = store.read(|s| s.clone()).expect("read");
         assert_eq!(on_disk, in_memory);
         assert_eq!(
-            on_disk.profiles.get("default"),
+            on_disk
+                .profiles
+                .get(&ProfileName::new("default").expect("valid profile")),
             Some(&Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap())
         );
     }
@@ -462,7 +477,7 @@ mod tests {
             store
                 .update(|s| {
                     s.staleness.insert(
-                        "svc-1".to_string(),
+                        ServiceId::new("svc-1").expect("valid id"),
                         super::super::model::StalenessStats {
                             count: 3,
                             last_at: Some(42),
@@ -475,7 +490,13 @@ mod tests {
         }
 
         let on_disk = load(&path).expect("load");
-        assert_eq!(on_disk.staleness.get("svc-1").map(|s| s.count), Some(3));
+        assert_eq!(
+            on_disk
+                .staleness
+                .get(&ServiceId::new("svc-1").expect("valid id"))
+                .map(|s| s.count),
+            Some(3)
+        );
     }
 
     #[test]
@@ -526,7 +547,7 @@ mod tests {
         store
             .update(|s| {
                 s.profiles.insert(
-                    "default".to_string(),
+                    ProfileName::new("default").expect("valid profile"),
                     Uuid::parse_str("00000000-0000-0000-0000-000000000003").unwrap(),
                 );
             })
@@ -538,7 +559,9 @@ mod tests {
 
         let on_disk = load(&path).expect("load");
         assert_eq!(
-            on_disk.profiles.get("default"),
+            on_disk
+                .profiles
+                .get(&ProfileName::new("default").expect("valid profile")),
             Some(&Uuid::parse_str("00000000-0000-0000-0000-000000000003").unwrap())
         );
     }

@@ -11,19 +11,7 @@ use uuid::Uuid;
 /// `notify::seen`).
 pub const SEEN_RING_CAPACITY: usize = 500;
 
-/// Key into [`State::seen`] and [`State::staleness`].
-///
-/// This is a plain `String` for now. Task 1.2 (config model), developed in
-/// parallel, introduces a `ServiceId` newtype in the config module; once it
-/// lands, this alias should be replaced with that type.
-pub type ServiceId = String;
-
-/// Key into [`State::profiles`].
-///
-/// Also a plain `String` for now, matching `BTreeMap<ProfileName, Uuid>`
-/// from design.md §2.2.2. See the note on [`ServiceId`]: this becomes the
-/// config module's `ProfileName` type once Task 1.2 lands.
-pub type ProfileName = String;
+pub use crate::config::{ProfileName, ServiceId};
 
 /// Persisted application state (`state.json`).
 ///
