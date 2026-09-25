@@ -136,10 +136,6 @@ impl serde::Serialize for ReportError {
 /// A validated message reference: the same shape as [`super::dto::MessageRefDto`],
 /// but every string is within bounds and `link`, if present, has already
 /// been parsed and checked (design.md §2.2.6).
-///
-/// Unused until Task 2.3's `unread` status store reads a `ValidReport`'s
-/// messages.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ValidMessageRef {
     pub id: String,
@@ -153,16 +149,16 @@ pub struct ValidMessageRef {
 /// constructor, so a `ValidReport` value is a type-level proof of
 /// validity.
 ///
-/// No consumer exists yet — Task 2.3 adds the `unread` status store that
-/// will read these — so every field but `service_id` (read by
-/// `report_unread`'s success log line) is `#[allow(dead_code)]` for now
-/// rather than fabricating a reader that doesn't exist.
+/// `service_id` is read by `report_unread`'s success log line; `count`
+/// and `messages` are read by task 4.4's `notify::diff::evaluate`.
+/// `recipe_id`, `observed_at` and `icon_candidates` have no consumer yet
+/// (later tasks: notification text and icon resolution), so they stay
+/// `#[allow(dead_code)]` rather than fabricating a reader that doesn't
+/// exist.
 #[derive(Debug, Clone)]
 pub struct ValidReport {
     service_id: ServiceId,
-    #[allow(dead_code)]
     count: Option<u32>,
-    #[allow(dead_code)]
     messages: Vec<ValidMessageRef>,
     #[allow(dead_code)]
     recipe_id: String,
@@ -176,6 +172,19 @@ impl ValidReport {
     /// The report's service id, for `report_unread`'s success log line.
     pub fn service_id(&self) -> &ServiceId {
         &self.service_id
+    }
+
+    /// The report's validated unread count (design.md §2.2.9's
+    /// `notify::diff::evaluate`): `None` means the agent could not
+    /// determine one.
+    pub fn count(&self) -> Option<u32> {
+        self.count
+    }
+
+    /// The report's validated message references, in report order
+    /// (design.md §2.2.9's `notify::diff::evaluate`).
+    pub fn messages(&self) -> &[ValidMessageRef] {
+        &self.messages
     }
 }
 
