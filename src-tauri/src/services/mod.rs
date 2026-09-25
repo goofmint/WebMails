@@ -739,6 +739,25 @@ impl ServiceManager {
         Ok(())
     }
 
+    /// Looks up `id`'s currently configured URL, for `agent_bridge`'s
+    /// `report_unread` command (design.md §2.2.6) to resolve a report's
+    /// service origin. Reflects the live `Config`, including edits
+    /// applied since startup — not just services that already have a
+    /// webview. `None` if `id` is not (or no longer) a configured
+    /// service, or if the manager never loaded its configuration.
+    pub async fn service_url(&self, id: &ServiceId) -> Option<Url> {
+        let guard = self.inner.lock().await;
+        match &*guard {
+            ManagerState::Failed(_) => None,
+            ManagerState::Ready(ready) => ready
+                .config
+                .services
+                .iter()
+                .find(|s| s.id == *id)
+                .map(|s| s.url.clone()),
+        }
+    }
+
     /// Emits `services-changed` — `{ services: [...] }`, `services` in
     /// sidebar order — to both the `shell` and `settings` webviews (Task
     /// 1.9; design.md §2.2.12). `emit_to` a label with no current webview
