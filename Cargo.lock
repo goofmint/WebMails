@@ -729,11 +729,8 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "toml 1.1.6+spec-1.1.0",
-<<<<<<< HEAD
  "toml_edit 0.25.15+spec-1.1.0",
-=======
  "tracing",
->>>>>>> 0a3b00f (Task 1.4: State store)
  "url",
  "uuid",
 ]
