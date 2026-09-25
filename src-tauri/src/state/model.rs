@@ -1,0 +1,137 @@
+//! The `State` model persisted to `state.json` (design.md §2.2.2, SPEC.md
+//! §13).
+
+use std::collections::{BTreeMap, VecDeque};
+
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+/// Maximum number of seen message ids retained per service, in [`SeenRing`]
+/// (design.md §2.2.2; eviction logic itself belongs to task 4.4's
+/// `notify::seen`).
+pub const SEEN_RING_CAPACITY: usize = 500;
+
+/// Key into [`State::seen`] and [`State::staleness`].
+///
+/// This is a plain `String` for now. Task 1.2 (config model), developed in
+/// parallel, introduces a `ServiceId` newtype in the config module; once it
+/// lands, this alias should be replaced with that type.
+pub type ServiceId = String;
+
+/// Key into [`State::profiles`].
+///
+/// Also a plain `String` for now, matching `BTreeMap<ProfileName, Uuid>`
+/// from design.md §2.2.2. See the note on [`ServiceId`]: this becomes the
+/// config module's `ProfileName` type once Task 1.2 lands.
+pub type ProfileName = String;
+
+/// Persisted application state (`state.json`).
+///
+/// Every field is required in the file: the app always writes all three, so
+/// a `state.json` missing one of them is treated as corrupt
+/// (`AppError::State`), never silently filled in with a default (no
+/// `#[serde(default)]` — see project rules). A *missing file* is a
+/// different, expected case: `state::load` returns [`State::empty`] rather
+/// than erroring when the file does not exist yet (design.md §2.2.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct State {
+    pub profiles: BTreeMap<ProfileName, Uuid>,
+    pub seen: BTreeMap<ServiceId, SeenRing>,
+    pub staleness: BTreeMap<ServiceId, StalenessStats>,
+}
+
+impl State {
+    /// The state for a fresh install: no profiles, no seen ids, no
+    /// staleness history yet. Used when no `state.json` exists (first
+    /// launch); deliberately not `Default`, so that call sites choose this
+    /// explicitly rather than by inference.
+    pub fn empty() -> Self {
+        State {
+            profiles: BTreeMap::new(),
+            seen: BTreeMap::new(),
+            staleness: BTreeMap::new(),
+        }
+    }
+}
+
+/// Ring buffer of seen message ids for one service, capped at
+/// [`SEEN_RING_CAPACITY`] (design.md §2.2.2).
+///
+/// This task defines only the storage type; insertion and eviction belong to
+/// task 4.4's `notify::seen` module.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SeenRing(pub VecDeque<String>);
+
+/// Liveness/staleness bookkeeping for one service (design.md §9.4, task
+/// 3.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StalenessStats {
+    pub count: u32,
+    /// Unix epoch milliseconds of the last report, if any has been seen.
+    pub last_at: Option<u64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_state_has_no_entries() {
+        let state = State::empty();
+        assert!(state.profiles.is_empty());
+        assert!(state.seen.is_empty());
+        assert!(state.staleness.is_empty());
+    }
+
+    #[test]
+    fn seen_ring_round_trips_through_json() {
+        let mut ring = SeenRing::default();
+        ring.0.push_back("a".to_string());
+        ring.0.push_back("b".to_string());
+
+        let json = serde_json::to_string(&ring).expect("serialize");
+        assert_eq!(json, r#"["a","b"]"#);
+
+        let back: SeenRing = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, ring);
+    }
+
+    #[test]
+    fn staleness_stats_last_at_accepts_explicit_null_or_a_value() {
+        // `last_at` is `Option<u64>`, not a fallback default: `None` is a
+        // meaningful value ("no report yet"), and serde's derive treats
+        // `Option<T>` fields as implicitly present-or-absent regardless of
+        // `#[serde(default)]`. The app always writes the key explicitly, so
+        // this only affects how permissive `load`/`StateStore::open` are on
+        // a hand-edited file, not the no-fallback rule for `State`'s own
+        // top-level fields (profiles/seen/staleness — see store.rs tests).
+        let explicit_null = serde_json::from_str::<StalenessStats>(r#"{"count":1,"last_at":null}"#)
+            .expect("deserialize");
+        assert_eq!(
+            explicit_null,
+            StalenessStats {
+                count: 1,
+                last_at: None
+            }
+        );
+
+        let with_value = serde_json::from_str::<StalenessStats>(r#"{"count":1,"last_at":42}"#)
+            .expect("deserialize");
+        assert_eq!(
+            with_value,
+            StalenessStats {
+                count: 1,
+                last_at: Some(42)
+            }
+        );
+    }
+
+    #[test]
+    fn staleness_stats_requires_count_key() {
+        // Unlike `last_at`, `count: u32` has no serde special-casing: a
+        // missing `count` key is a genuine parse error.
+        let missing = serde_json::from_str::<StalenessStats>(r#"{"last_at":null}"#);
+        assert!(missing.is_err());
+    }
+}

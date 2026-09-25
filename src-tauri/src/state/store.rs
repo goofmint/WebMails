@@ -1,0 +1,545 @@
+//! Loading, atomically saving, and debounced background-saving of
+//! `state.json` (design.md §2.2.2, §8.2, SPEC.md §13).
+
+use std::fs;
+use std::io;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use crate::error::{AppError, AppResult};
+
+use super::model::State;
+
+/// How often [`StateStore`] writes its state to disk in the background, at
+/// most (design.md §2.2.2: "at most once per second").
+pub const SAVE_DEBOUNCE: Duration = Duration::from_secs(1);
+
+/// Loads state from `path`.
+///
+/// Does not depend on Tauri; the caller resolves the path (see
+/// `paths::state_file`).
+///
+/// - If `path` does not exist, returns [`State::empty`] without creating,
+///   moving or deleting anything: an empty state is the expected shape on
+///   first launch (design.md §2.2.2).
+/// - If the file exists but cannot be parsed — corrupt syntax, a wrong
+///   type, or a required field missing — returns `AppError::State` naming
+///   the path and the underlying parse error. The file itself is left
+///   untouched.
+/// - Any other I/O failure becomes `AppError::Io`.
+pub fn load(path: &Path) -> AppResult<State> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(State::empty()),
+        Err(err) => return Err(AppError::Io(err)),
+    };
+
+    serde_json::from_slice(&bytes)
+        .map_err(|err| AppError::State(format!("{}: {err}", path.display())))
+}
+
+/// Writes `state` to `path` atomically.
+///
+/// The parent directory is created if it does not exist. `state` is
+/// serialized to pretty JSON and written to a temp file in the same
+/// directory, `sync_all` is called on it, and it is then renamed onto
+/// `path`. A serialization failure is `AppError::State`; any I/O failure is
+/// `AppError::Io`.
+pub fn save_atomic(path: &Path, state: &State) -> AppResult<()> {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .ok_or_else(|| AppError::State(format!("{}: has no parent directory", path.display())))?;
+    fs::create_dir_all(parent)?;
+
+    let json = serde_json::to_vec_pretty(state)
+        .map_err(|err| AppError::State(format!("{}: {err}", path.display())))?;
+
+    let tmp_path = tmp_path_for(path)?;
+    if let Err(err) = write_and_sync(&tmp_path, &json) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(err.into());
+    }
+    fs::rename(&tmp_path, path)?;
+    Ok(())
+}
+
+fn write_and_sync(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut file = fs::File::create(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+fn tmp_path_for(path: &Path) -> AppResult<PathBuf> {
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| AppError::State(format!("{}: has no file name", path.display())))?;
+    let mut tmp_name = file_name.to_os_string();
+    tmp_name.push(".tmp");
+    Ok(path.with_file_name(tmp_name))
+}
+
+/// Flags shared between [`StateStore`] and its background worker thread,
+/// guarded together so the worker can wait on both with one [`Condvar`].
+#[derive(Debug)]
+struct WorkerFlags {
+    dirty: bool,
+    shutdown: bool,
+}
+
+#[derive(Debug)]
+struct Shared {
+    path: PathBuf,
+    state: Mutex<State>,
+    flags: Mutex<WorkerFlags>,
+    condvar: Condvar,
+}
+
+fn poison_err() -> AppError {
+    AppError::State("state store mutex poisoned".to_string())
+}
+
+/// An in-memory `State`, debounced-saved to disk in the background.
+///
+/// Reads and updates go through an in-memory `Mutex<State>`; updates mark
+/// the store dirty and wake the worker thread, which saves at most once per
+/// [`SAVE_DEBOUNCE`] interval. [`StateStore::flush`] saves synchronously,
+/// and is also called from `Drop` so nothing is lost on shutdown.
+#[derive(Debug)]
+pub struct StateStore {
+    inner: Arc<Shared>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl StateStore {
+    /// Loads `path` and starts the background save worker.
+    ///
+    /// The store (and its worker thread) are created only if the initial
+    /// `load` succeeds; a corrupt file is returned as an error and no
+    /// worker is started.
+    pub fn open(path: PathBuf) -> AppResult<Self> {
+        Self::open_with_interval(path, SAVE_DEBOUNCE)
+    }
+
+    fn open_with_interval(path: PathBuf, interval: Duration) -> AppResult<Self> {
+        let state = load(&path)?;
+        let shared = Arc::new(Shared {
+            path,
+            state: Mutex::new(state),
+            flags: Mutex::new(WorkerFlags {
+                dirty: false,
+                shutdown: false,
+            }),
+            condvar: Condvar::new(),
+        });
+
+        let worker_shared = Arc::clone(&shared);
+        let handle = thread::spawn(move || run_worker(worker_shared, interval));
+
+        Ok(StateStore {
+            inner: shared,
+            worker: Some(handle),
+        })
+    }
+
+    /// Runs `f` against the current in-memory state and returns its result.
+    pub fn read<T>(&self, f: impl FnOnce(&State) -> T) -> AppResult<T> {
+        let guard = self.inner.state.lock().map_err(|_| poison_err())?;
+        Ok(f(&guard))
+    }
+
+    /// Runs `f` against the current in-memory state, marks the store dirty
+    /// and wakes the background worker so the change is saved within
+    /// [`SAVE_DEBOUNCE`].
+    pub fn update<T>(&self, f: impl FnOnce(&mut State) -> T) -> AppResult<T> {
+        let result = {
+            let mut guard = self.inner.state.lock().map_err(|_| poison_err())?;
+            f(&mut guard)
+        };
+        {
+            let mut flags = self.inner.flags.lock().map_err(|_| poison_err())?;
+            flags.dirty = true;
+        }
+        self.inner.condvar.notify_all();
+        Ok(result)
+    }
+
+    /// Saves synchronously if the store is dirty; a no-op otherwise.
+    pub fn flush(&self) -> AppResult<()> {
+        {
+            let mut flags = self.inner.flags.lock().map_err(|_| poison_err())?;
+            if !flags.dirty {
+                return Ok(());
+            }
+            flags.dirty = false;
+        }
+
+        let snapshot = {
+            let guard = self.inner.state.lock().map_err(|_| poison_err())?;
+            guard.clone()
+        };
+
+        match save_atomic(&self.inner.path, &snapshot) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                // Keep the change marked dirty so a later flush (or the
+                // background worker) retries it.
+                if let Ok(mut flags) = self.inner.flags.lock() {
+                    flags.dirty = true;
+                }
+                Err(err)
+            }
+        }
+    }
+}
+
+impl Drop for StateStore {
+    fn drop(&mut self) {
+        // A poisoned mutex is recovered (rather than left locked forever)
+        // so the worker thread can still observe the shutdown request and
+        // `join()` below does not hang.
+        let mut flags = match self.inner.flags.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        flags.shutdown = true;
+        drop(flags);
+        self.inner.condvar.notify_all();
+
+        if let Some(handle) = self.worker.take() {
+            let _ = handle.join();
+        }
+
+        // A change that raced with shutdown (marked dirty after the worker
+        // last checked, but before it exited) is still captured by the
+        // `dirty` flag; flush it synchronously so it is not lost.
+        if let Err(err) = self.flush() {
+            tracing::warn!(error = %err, "final state flush on shutdown failed");
+        }
+    }
+}
+
+/// Waits for a dirty (non-shutdown) state, debounces against `interval`
+/// since the last save, snapshots and saves, then loops. Exits once
+/// shutdown is requested and there is no pending dirty change to save.
+fn run_worker(shared: Arc<Shared>, interval: Duration) {
+    let mut last_saved: Option<Instant> = None;
+
+    loop {
+        let mut flags = lock_flags(&shared);
+        loop {
+            if flags.shutdown && !flags.dirty {
+                return;
+            }
+            if flags.dirty {
+                break;
+            }
+            flags = match shared.condvar.wait(flags) {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+        }
+
+        if let Some(last) = last_saved {
+            let elapsed = last.elapsed();
+            if elapsed < interval {
+                let remaining = interval - elapsed;
+                let (g, _timeout) = match shared.condvar.wait_timeout(flags, remaining) {
+                    Ok(v) => v,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                flags = g;
+                if !flags.dirty {
+                    // Woken early (e.g. shutdown) with nothing new to save;
+                    // re-check the loop conditions from the top.
+                    continue;
+                }
+            }
+        }
+
+        flags.dirty = false;
+        drop(flags);
+
+        let snapshot = {
+            let guard = match shared.state.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            guard.clone()
+        };
+
+        match save_atomic(&shared.path, &snapshot) {
+            Ok(()) => last_saved = Some(Instant::now()),
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    path = %shared.path.display(),
+                    "background state save failed; will retry"
+                );
+                let mut flags = lock_flags(&shared);
+                flags.dirty = true;
+            }
+        }
+    }
+}
+
+fn lock_flags(shared: &Shared) -> std::sync::MutexGuard<'_, WorkerFlags> {
+    match shared.flags.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    use tempfile::tempdir;
+    use uuid::Uuid;
+
+    fn sample_state() -> State {
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "default".to_string(),
+            Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
+        );
+        State {
+            profiles,
+            seen: BTreeMap::new(),
+            staleness: BTreeMap::new(),
+        }
+    }
+
+    // --- load / save_atomic --------------------------------------------
+
+    #[test]
+    fn load_missing_file_returns_empty_state_and_creates_nothing() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("nested").join("state.json");
+
+        let state = load(&path).expect("load");
+        assert_eq!(state, State::empty());
+        assert!(!path.exists());
+        assert!(!path.parent().unwrap().exists());
+    }
+
+    #[test]
+    fn save_atomic_creates_parent_dir() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("nested").join("state.json");
+
+        save_atomic(&path, &State::empty()).expect("save");
+
+        assert!(path.exists());
+        assert!(path.parent().unwrap().is_dir());
+    }
+
+    #[test]
+    fn load_reads_known_json() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        fs::write(&path, r#"{"profiles":{},"seen":{},"staleness":{}}"#).expect("write");
+
+        let state = load(&path).expect("load");
+        assert_eq!(state, State::empty());
+    }
+
+    #[test]
+    fn save_then_load_round_trips() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let state = sample_state();
+
+        save_atomic(&path, &state).expect("save");
+        let loaded = load(&path).expect("load");
+
+        assert_eq!(loaded, state);
+    }
+
+    #[test]
+    fn save_atomic_leaves_no_temp_file() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+
+        save_atomic(&path, &sample_state()).expect("save");
+
+        let names: Vec<String> = fs::read_dir(dir.path())
+            .expect("read_dir")
+            .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["state.json".to_string()]);
+    }
+
+    #[test]
+    fn load_corrupt_syntax_is_state_error_and_leaves_file_unchanged() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let original = b"{ this is not json".to_vec();
+        fs::write(&path, &original).expect("write");
+
+        let err = load(&path).expect_err("should fail");
+        assert_eq!(err.kind(), "state");
+        assert_eq!(fs::read(&path).expect("read"), original);
+    }
+
+    #[test]
+    fn load_wrong_type_is_state_error_and_leaves_file_unchanged() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let original = br#"{"profiles":[],"seen":{},"staleness":{}}"#.to_vec();
+        fs::write(&path, &original).expect("write");
+
+        let err = load(&path).expect_err("should fail");
+        assert_eq!(err.kind(), "state");
+        assert_eq!(fs::read(&path).expect("read"), original);
+    }
+
+    #[test]
+    fn load_missing_field_is_state_error_and_leaves_file_unchanged() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let original = br#"{"profiles":{},"seen":{}}"#.to_vec();
+        fs::write(&path, &original).expect("write");
+
+        let err = load(&path).expect_err("should fail");
+        assert_eq!(err.kind(), "state");
+        assert_eq!(fs::read(&path).expect("read"), original);
+    }
+
+    // --- StateStore ------------------------------------------------------
+
+    fn short_interval() -> Duration {
+        Duration::from_millis(20)
+    }
+
+    #[test]
+    fn open_missing_file_starts_with_empty_state() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+
+        let store = StateStore::open_with_interval(path.clone(), short_interval()).expect("open");
+        let state = store.read(|s| s.clone()).expect("read");
+        assert_eq!(state, State::empty());
+    }
+
+    #[test]
+    fn update_then_flush_persists_to_disk() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let store = StateStore::open_with_interval(path.clone(), short_interval()).expect("open");
+
+        store
+            .update(|s| {
+                s.profiles.insert(
+                    "default".to_string(),
+                    Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap(),
+                );
+            })
+            .expect("update");
+        store.flush().expect("flush");
+
+        let on_disk = load(&path).expect("load");
+        let in_memory = store.read(|s| s.clone()).expect("read");
+        assert_eq!(on_disk, in_memory);
+        assert_eq!(
+            on_disk.profiles.get("default"),
+            Some(&Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap())
+        );
+    }
+
+    #[test]
+    fn drop_flushes_pending_update() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+
+        {
+            let store = StateStore::open_with_interval(path.clone(), Duration::from_secs(60))
+                .expect("open");
+            store
+                .update(|s| {
+                    s.staleness.insert(
+                        "svc-1".to_string(),
+                        super::super::model::StalenessStats {
+                            count: 3,
+                            last_at: Some(42),
+                        },
+                    );
+                })
+                .expect("update");
+            // Store is dropped here, before the long debounce interval
+            // elapses; Drop must flush synchronously.
+        }
+
+        let on_disk = load(&path).expect("load");
+        assert_eq!(on_disk.staleness.get("svc-1").map(|s| s.count), Some(3));
+    }
+
+    #[test]
+    fn open_corrupt_syntax_is_state_error_and_leaves_file_unchanged() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let original = b"not json at all".to_vec();
+        fs::write(&path, &original).expect("write");
+
+        let err = StateStore::open_with_interval(path.clone(), short_interval())
+            .expect_err("should fail");
+        assert_eq!(err.kind(), "state");
+        assert_eq!(fs::read(&path).expect("read"), original);
+    }
+
+    #[test]
+    fn open_wrong_type_is_state_error_and_leaves_file_unchanged() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let original = br#"{"profiles":{},"seen":[],"staleness":{}}"#.to_vec();
+        fs::write(&path, &original).expect("write");
+
+        let err = StateStore::open_with_interval(path.clone(), short_interval())
+            .expect_err("should fail");
+        assert_eq!(err.kind(), "state");
+        assert_eq!(fs::read(&path).expect("read"), original);
+    }
+
+    #[test]
+    fn open_missing_field_is_state_error_and_leaves_file_unchanged() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let original = br#"{"seen":{},"staleness":{}}"#.to_vec();
+        fs::write(&path, &original).expect("write");
+
+        let err = StateStore::open_with_interval(path.clone(), short_interval())
+            .expect_err("should fail");
+        assert_eq!(err.kind(), "state");
+        assert_eq!(fs::read(&path).expect("read"), original);
+    }
+
+    #[test]
+    fn background_worker_saves_dirty_state_within_debounce() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let store = StateStore::open_with_interval(path.clone(), short_interval()).expect("open");
+
+        store
+            .update(|s| {
+                s.profiles.insert(
+                    "default".to_string(),
+                    Uuid::parse_str("00000000-0000-0000-0000-000000000003").unwrap(),
+                );
+            })
+            .expect("update");
+
+        // Give the background worker time to wake up and save, well beyond
+        // the short debounce interval used in this test.
+        thread::sleep(short_interval() * 10);
+
+        let on_disk = load(&path).expect("load");
+        assert_eq!(
+            on_disk.profiles.get("default"),
+            Some(&Uuid::parse_str("00000000-0000-0000-0000-000000000003").unwrap())
+        );
+    }
+}
