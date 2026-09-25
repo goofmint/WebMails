@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
-  "windows": ["main"],
+  "description": "Capability for the shell webview (and, later, settings). Scoped by webview label, not window label, so it never reaches the `svc-<id>` service webviews that share the `main` window (design.md §4.3, §9.2; Tauri 2.11's `webviews` field applies regardless of a webview's window, unlike `windows`, which would grant every webview on that window).",
+  "webviews": ["shell", "settings"],
   "permissions": ["core:default"]
 }
