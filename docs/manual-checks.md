@@ -2,7 +2,7 @@
 
 This checklist maps each milestone exit criterion in `SPEC.md` §16 to manual checks against real services. The owner runs the app (`pnpm tauri dev`) and ticks each item after verifying it. Record the date, platform and result under each item.
 
-Platforms: macOS 14+ and Windows 11.
+Platforms: macOS 14+, Windows 10 and Windows 11 (SPEC target platforms).
 
 ## M1 — Shell
 
@@ -24,6 +24,7 @@ Exit criterion (SPEC §16): badges still correct after 2 hours minimised, on bot
 
 - [ ] Badges match the real inboxes after 2 hours minimised (macOS)
 - [ ] Badges match the real inboxes after 2 hours minimised (Windows 11), or the degraded state is documented
+- [ ] Badges match the real inboxes after 2 hours minimised (Windows 10), or the degraded state is documented
 - [ ] Memory use per service recorded (R7)
 
 ## M4 — Notifications
