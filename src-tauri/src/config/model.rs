@@ -8,7 +8,7 @@
 use std::fmt;
 use std::path::PathBuf;
 
-use serde::Serialize;
+use serde::{Deserialize, Deserializer, Serialize};
 use url::Url;
 
 use crate::error::AppError;
@@ -45,9 +45,17 @@ fn validate_id_chars(value: &str) -> Result<(), String> {
 
 /// A service identifier: `[a-z0-9-]{1,48}`, unique within `config.toml`
 /// (design.md §2.2.1).
-#[derive(Serialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(transparent)]
 pub struct ServiceId(String);
+
+/// Deserialization (e.g. as a `state.json` map key) runs the same validation as [`ServiceId::new`].
+impl<'de> Deserialize<'de> for ServiceId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Self::new(value).map_err(serde::de::Error::custom)
+    }
+}
 
 impl ServiceId {
     /// Validates `value` against the id character class.
@@ -71,9 +79,17 @@ impl fmt::Display for ServiceId {
 /// A profile name (design.md §2.2.1, SPEC.md §5): `"default"`, `"isolated"`,
 /// or an arbitrary named profile, all sharing the id character class (see
 /// [`ID_PATTERN_DESCRIPTION`]).
-#[derive(Serialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(transparent)]
 pub struct ProfileName(String);
+
+/// Deserialization (e.g. as a `state.json` map key) runs the same validation as [`ProfileName::new`].
+impl<'de> Deserialize<'de> for ProfileName {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        Self::new(value).map_err(serde::de::Error::custom)
+    }
+}
 
 impl ProfileName {
     /// Validates `value` against the id character class.
