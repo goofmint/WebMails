@@ -6,12 +6,10 @@ pub mod paths;
 pub mod profile;
 pub mod state;
 
-use std::sync::Arc;
-
 use tauri::{Manager, WebviewUrl};
 
 use config::{ProfileName, ServiceId};
-use host::{layout, MultiwebviewHost, ServiceWebviewSpec, WebviewHost};
+use host::{build_main_host, layout, ServiceWebviewSpec};
 use profile::PlatformProfileBackend;
 use state::State;
 
@@ -46,19 +44,19 @@ pub fn run() {
         .setup(|app| {
             // `app.windows` is empty in `tauri.conf.json` (design.md §9.2):
             // the main window is built here in code because it needs
-            // `add_child` (design.md §10).
-            let window = tauri::window::WindowBuilder::new(app, "main")
-                .title("Eluma")
-                .inner_size(800.0, 600.0)
-                .build()?;
-
+            // `add_child` (design.md §10). `build_main_host` picks the
+            // concrete `WebviewHost` (`MultiwebviewHost`, or
+            // `ChildWindowHost` behind Cargo feature `host-child-windows`,
+            // design.md §8.1; Task 1.7) behind one cfg branch, so this
+            // stays the same call either way.
             let profile_backend = PlatformProfileBackend::new(app.handle())?;
-            let host = MultiwebviewHost::new(
-                window.clone(),
+            let (window, host) = build_main_host(
+                app.handle(),
                 WebviewUrl::App("index.html".into()),
+                "Eluma",
+                (800.0, 600.0),
                 profile_backend,
             )?;
-            let host: Arc<dyn WebviewHost> = Arc::new(host);
             app.manage(host.clone());
 
             // Relayout on resize and on display-scale change, skipping
@@ -83,9 +81,36 @@ pub fn run() {
                         new_inner_size,
                         ..
                     } => (new_inner_size.width, new_inner_size.height, *scale_factor),
+                    // `ChildWindowHost`'s service windows are separate OS
+                    // windows tracking `main`'s screen position, not just
+                    // its size (design.md §2.2.4's fallback bullet), so
+                    // only that host needs a `Moved` relayout too; gating
+                    // the arm on the feature (rather than matching it
+                    // unconditionally) keeps `MultiwebviewHost`'s own
+                    // behaviour — no relayout on move, since its child
+                    // webviews are window-relative already — unchanged
+                    // when the feature is off (Task 1.7).
+                    #[cfg(feature = "host-child-windows")]
+                    tauri::WindowEvent::Moved(_) => {
+                        let scale_factor = match relayout_window.scale_factor() {
+                            Ok(scale_factor) => scale_factor,
+                            Err(err) => {
+                                tracing::error!("relayout: could not read scale factor: {err}");
+                                return;
+                            }
+                        };
+                        let size = match relayout_window.inner_size() {
+                            Ok(size) => size,
+                            Err(err) => {
+                                tracing::error!("relayout: could not read inner size: {err}");
+                                return;
+                            }
+                        };
+                        (size.width, size.height, scale_factor)
+                    }
                     // `WindowEvent` is not exhaustive on every platform
                     // (some variants are `cfg(mobile)`-only), and this
-                    // handler only cares about the two above.
+                    // handler only cares about the ones above.
                     _ => return,
                 };
                 if physical_width == 0 || physical_height == 0 {

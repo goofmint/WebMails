@@ -4,25 +4,46 @@
 //! helper, and the builder settings common to the shell and every service
 //! webview.
 //!
-//! [`layout`] is the only submodule with no Tauri dependency. Everything
-//! else here, and all of [`multiwebview`], needs Tauri's `unstable`
-//! feature (`WebviewBuilder`, `Window::add_child`); design.md §10 confines
-//! every call to those two APIs to `host/multiwebview.rs` — this module
-//! only *defines* the settings [`multiwebview`] applies with them.
+//! [`layout`] (and, behind Cargo feature `host-child-windows`,
+//! [`child_geometry`]) is the only submodule with no Tauri dependency.
+//! Everything else here, and all of [`multiwebview`] (and, behind that
+//! same feature, [`child_windows`]), needs Tauri's `unstable` feature
+//! (`WebviewBuilder`, `Window::add_child`); design.md §10 confines every
+//! call to those two APIs to `host/multiwebview.rs` — this module only
+//! *defines* the settings [`multiwebview`] applies with them.
+//!
+//! [`build_main_host`] is the one cfg branch point between the two
+//! `WebviewHost` implementations: it builds the main window and picks
+//! [`MultiwebviewHost`] (default) or [`ChildWindowHost`] (Cargo feature
+//! `host-child-windows`, design.md §8.1's fallback; Task 1.7), so
+//! `lib.rs`'s `setup` calls one function and gets back the same
+//! `Arc<dyn WebviewHost>` either way, regardless of which concrete host
+//! that build selected.
 
 pub mod layout;
 mod multiwebview;
 
+#[cfg(feature = "host-child-windows")]
+mod child_geometry;
+#[cfg(feature = "host-child-windows")]
+mod child_windows;
+
 pub use layout::{Rect, SIDEBAR_WIDTH};
 pub use multiwebview::MultiwebviewHost;
 
+#[cfg(feature = "host-child-windows")]
+pub use child_windows::ChildWindowHost;
+
+use std::sync::Arc;
+
 use tauri::webview::{PageLoadPayload, WebviewBuilder};
-use tauri::{Webview, Wry};
+use tauri::{AppHandle, Webview, WebviewUrl, Window, Wry};
 use url::Url;
 use uuid::Uuid;
 
 use crate::config::ServiceId;
 use crate::error::AppResult;
+use crate::profile::ProfileBackend;
 
 /// The contract every webview-hosting backend implements (design.md
 /// §2.2.4). [`MultiwebviewHost`] is the default, built on
@@ -129,6 +150,81 @@ pub fn apply_common_settings(builder: WebviewBuilder<Wry>) -> WebviewBuilder<Wry
     #[cfg(windows)]
     let builder = builder.additional_browser_args(WEBVIEW2_ARGS);
     builder
+}
+
+/// [`apply_common_settings`]'s `WebviewWindowBuilder` sibling, for
+/// [`ChildWindowHost`]'s main window and per-service windows (Task 1.7):
+/// the same two settings, applied to `tauri::webview::WebviewWindowBuilder`
+/// rather than `WebviewBuilder`, since `WebviewWindow` exposes
+/// `background_throttling`/`additional_browser_args` with the identical
+/// name and signature (design.md §2.2.4's "Common builder settings, per
+/// service" — these two apply to every webview regardless of which host
+/// hosts it).
+///
+/// Only reachable behind Cargo feature `host-child-windows`, so it is
+/// gated the same way rather than left for `#[allow(dead_code)]`.
+#[cfg(feature = "host-child-windows")]
+pub fn apply_common_settings_window<'a, M: tauri::Manager<Wry>>(
+    builder: tauri::webview::WebviewWindowBuilder<'a, Wry, M>,
+) -> tauri::webview::WebviewWindowBuilder<'a, Wry, M> {
+    #[cfg(target_os = "macos")]
+    let builder =
+        builder.background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled);
+    #[cfg(windows)]
+    let builder = builder.additional_browser_args(WEBVIEW2_ARGS);
+    builder
+}
+
+/// Builds the app's main window and the `WebviewHost` this build uses,
+/// behind one cfg branch (design.md §8.1; Task 1.7's own instructions:
+/// keep `lib.rs`'s diff to this call, since Task 1.8 edits `setup`
+/// concurrently on another branch).
+///
+/// Returns the plain `Window<Wry>` underlying the host's main surface —
+/// identical in shape for both implementations, since `ChildWindowHost`'s
+/// main is a `WebviewWindow` and `Webview::window()` recovers its
+/// `Window<Wry>` — so the caller's own resize/move event wiring (reading
+/// `inner_size`/`scale_factor`, calling `on_window_event`) is the same
+/// code regardless of which host this returns — together with the host
+/// itself as `Arc<dyn WebviewHost>`, the same type `lib.rs` has `manage`d
+/// since Task 1.6.
+#[cfg(not(feature = "host-child-windows"))]
+pub fn build_main_host<B: ProfileBackend + Send + Sync + 'static>(
+    app: &AppHandle<Wry>,
+    shell_url: WebviewUrl,
+    title: &str,
+    inner_size: (f64, f64),
+    profile_backend: B,
+) -> AppResult<(Window<Wry>, Arc<dyn WebviewHost>)> {
+    let window = tauri::window::WindowBuilder::new(app, "main")
+        .title(title)
+        .inner_size(inner_size.0, inner_size.1)
+        .build()
+        .map_err(crate::error::AppError::from)?;
+    let host = MultiwebviewHost::new(window.clone(), shell_url, profile_backend)?;
+    Ok((window, Arc::new(host)))
+}
+
+/// [`build_main_host`]'s `host-child-windows` branch: builds `main` as a
+/// `WebviewWindow` labelled [`child_windows::MAIN_LABEL`] (`"shell"`) and
+/// wraps it in a [`ChildWindowHost`] (design.md §2.2.4's fallback bullet).
+#[cfg(feature = "host-child-windows")]
+pub fn build_main_host<B: ProfileBackend + Send + Sync + 'static>(
+    app: &AppHandle<Wry>,
+    shell_url: WebviewUrl,
+    title: &str,
+    inner_size: (f64, f64),
+    profile_backend: B,
+) -> AppResult<(Window<Wry>, Arc<dyn WebviewHost>)> {
+    let builder =
+        tauri::webview::WebviewWindowBuilder::new(app, child_windows::MAIN_LABEL, shell_url)
+            .title(title)
+            .inner_size(inner_size.0, inner_size.1);
+    let builder = apply_common_settings_window(builder);
+    let main = builder.build().map_err(crate::error::AppError::from)?;
+    let window = AsRef::<Webview<Wry>>::as_ref(&main).window();
+    let host = ChildWindowHost::new(app.clone(), main, profile_backend)?;
+    Ok((window, Arc::new(host)))
 }
 
 #[cfg(test)]

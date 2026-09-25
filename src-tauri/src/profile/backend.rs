@@ -13,8 +13,8 @@
 
 use std::path::{Path, PathBuf};
 
-use tauri::webview::WebviewBuilder;
-use tauri::{AppHandle, Wry};
+use tauri::webview::{WebviewBuilder, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager, Wry};
 use uuid::Uuid;
 
 use crate::error::AppResult;
@@ -34,6 +34,24 @@ pub trait ProfileBackend {
     /// construction. Called before the webview is created, alongside the
     /// other per-webview builder settings (design.md §2.2.4).
     fn apply(&self, builder: WebviewBuilder<Wry>, uuid: Uuid) -> WebviewBuilder<Wry>;
+
+    /// [`Self::apply`]'s `WebviewWindowBuilder` sibling, for
+    /// `ChildWindowHost`'s main window and per-service `WebviewWindow`s
+    /// (design.md §2.2.4's fallback bullet; Task 1.7). Attaches the same
+    /// `uuid`'s data-store identity, sharing each platform impl's own
+    /// value-computing logic with [`Self::apply`] — `uuid.into_bytes()` on
+    /// macOS, [`webview_data_dir`] on Windows — rather than duplicating
+    /// it.
+    ///
+    /// Generic over `M: Manager<Wry>` (rather than fixing `WebviewWindow`'s
+    /// second type parameter) because `WebviewWindowBuilder<'a, R, M>` is
+    /// itself generic over whatever `Manager` built it (an `AppHandle` in
+    /// `ChildWindowHost`'s case).
+    fn apply_window<'a, M: Manager<Wry>>(
+        &self,
+        builder: WebviewWindowBuilder<'a, Wry, M>,
+        uuid: Uuid,
+    ) -> WebviewWindowBuilder<'a, Wry, M>;
 
     /// Removes `uuid`'s on-disk / data-store state.
     ///
@@ -80,6 +98,14 @@ impl ProfileBackend for PlatformProfileBackend {
         builder.data_store_identifier(uuid.into_bytes())
     }
 
+    fn apply_window<'a, M: Manager<Wry>>(
+        &self,
+        builder: WebviewWindowBuilder<'a, Wry, M>,
+        uuid: Uuid,
+    ) -> WebviewWindowBuilder<'a, Wry, M> {
+        builder.data_store_identifier(uuid.into_bytes())
+    }
+
     async fn remove(&self, app: &AppHandle<Wry>, uuid: Uuid) -> AppResult<()> {
         // `AppHandle::remove_data_store` schedules itself onto the main
         // thread internally (see its doc comment in the tauri source), so
@@ -121,6 +147,14 @@ impl ProfileBackend for PlatformProfileBackend {
         // different data directories, so differing args here would
         // silently break profile sharing. That constant is applied by the
         // `host` module, not here.
+        builder.data_directory(webview_data_dir(&self.root, uuid))
+    }
+
+    fn apply_window<'a, M: Manager<Wry>>(
+        &self,
+        builder: WebviewWindowBuilder<'a, Wry, M>,
+        uuid: Uuid,
+    ) -> WebviewWindowBuilder<'a, Wry, M> {
         builder.data_directory(webview_data_dir(&self.root, uuid))
     }
 

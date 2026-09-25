@@ -27,6 +27,13 @@ For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/
 - [ ] Minimising and restoring the window leaves the shell and the test service in their prior layout, with no crash (macOS)
 - [ ] Minimising and restoring the window leaves the shell and the test service in their prior layout, with no crash (Windows 11)
 
+### Task 1.7 — Fallback host (`ChildWindowHost`, `cargo tauri dev --features host-child-windows`)
+
+For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/fail, with notes) before checking it off.
+
+- [ ] Built with `--features host-child-windows`: the shell and the hard-coded test service render correctly, switching (would-be) services relays out and focuses correctly, and drag-resizing, drag-moving, minimising/restoring and closing the main window all keep the service window(s) in sync (matching geometry offscreen/onscreen, closed on quit) with no gap, overlap, stale geometry or crash (macOS)
+- [ ] Same, on Windows 11
+
 ## M2 — Unread
 
 Exit criterion (SPEC §16): N Gmail accounts plus iCloud show live counts while the window is in the background.
