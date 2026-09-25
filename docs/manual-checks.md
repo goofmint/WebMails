@@ -18,14 +18,27 @@ For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/
 
 - [ ] The shell sidebar renders at exactly 64px wide, full window height, with no gap or overlap against the content area (macOS)
 - [ ] The shell sidebar renders at exactly 64px wide, full window height, with no gap or overlap against the content area (Windows 11)
-- [ ] The hard-coded test service (`https://example.com`) is visible and interactive in the content area on launch (macOS)
-- [ ] The hard-coded test service (`https://example.com`) is visible and interactive in the content area on launch (Windows 11)
-- [ ] Drag-resizing the window relays out the shell and the test service with no stale geometry, gap or overlap (macOS)
-- [ ] Drag-resizing the window relays out the shell and the test service with no stale geometry, gap or overlap (Windows 11)
+- [ ] With one service configured in `config.toml`, it is visible and interactive in the content area on launch (macOS) (Task 1.8 replaced the hard-coded `https://example.com` test service used to check this before `config.toml`-driven startup existed — use a real configured service now)
+- [ ] Same single-service startup rendering (Windows 11)
+- [ ] Drag-resizing the window relays out the shell and the active service with no stale geometry, gap or overlap (macOS)
+- [ ] Drag-resizing the window relays out the shell and the active service with no stale geometry, gap or overlap (Windows 11)
 - [ ] Changing the display scale factor (moving the window to a different-DPI display, or changing OS scaling) relays out both webviews correctly (macOS)
 - [ ] Changing the display scale factor relays out both webviews correctly (Windows 11)
-- [ ] Minimising and restoring the window leaves the shell and the test service in their prior layout, with no crash (macOS)
-- [ ] Minimising and restoring the window leaves the shell and the test service in their prior layout, with no crash (Windows 11)
+- [ ] Minimising and restoring the window leaves the shell and the active service in their prior layout, with no crash (macOS)
+- [ ] Minimising and restoring the window leaves the shell and the active service in their prior layout, with no crash (Windows 11)
+
+### Task 1.8 — Service lifecycle orchestration
+
+For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/fail, with notes) before checking it off.
+
+- [ ] With two or more services in `config.toml`, they are created in sidebar order at launch, each roughly `STARTUP_STAGGER` (1500ms) after the previous one (macOS)
+- [ ] Same staggered startup order and timing (Windows 11)
+- [ ] The first service to finish creating is activated immediately, before the rest have started (macOS)
+- [ ] Same immediate first-activation behaviour (Windows 11)
+- [ ] One service configured with an unreachable URL fails to create without stopping the other configured services from starting (macOS)
+- [ ] Same unreachable-URL isolation (Windows 11)
+- [ ] Starting the app with an invalid `config.toml` (e.g. a missing required key) starts no services, and the file on disk is byte-for-byte unchanged afterward (macOS)
+- [ ] Same invalid-`config.toml` behaviour (Windows 11)
 
 ### Task 1.7 — Fallback host (`ChildWindowHost`, `cargo tauri dev --features host-child-windows`)
 
