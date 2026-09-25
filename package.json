@@ -5,7 +5,7 @@
   "type": "module",
   "packageManager": "pnpm@11.12.0",
   "scripts": {
-    "dev": "vite",
+    "dev": "pnpm build:agent && vite",
     "build:shell": "tsc -b && vite build",
     "build:agent": "vite build --config vite.agent.config.ts",
     "build": "pnpm build:agent && pnpm build:shell",

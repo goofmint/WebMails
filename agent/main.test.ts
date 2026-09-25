@@ -1,10 +1,16 @@
-import { describe, expect, it } from "vitest";
-import { bootstrap } from "./main";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-describe("bootstrap", () => {
-  it("runs without throwing", () => {
-    expect(() => {
-      bootstrap();
-    }).not.toThrow();
+describe("agent entry point", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  it("logs an identifying message when loaded", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await import("./main");
+
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("[eluma-agent]"));
   });
 });
