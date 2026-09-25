@@ -1,4 +1,4 @@
-# WebMails
+# Eluma
 
 Eluma is a Tauri desktop app that hosts webmail services, each in its own resident webview.
 See `SPEC.md` and `design.md` for the product spec and technical design.

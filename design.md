@@ -299,7 +299,7 @@ async fn report_unread(webview: tauri::Webview, report: UnreadReportDto, …) ->
   - At most 100 `messages`. Each string is at most 512 characters.
   - `link`, if present, must be `https` and on the service origin.
   - `recipeId` is at most 64 characters and matches `[a-z0-9-]`.
-  - At most 8 `iconCandidates`, each `https` or `http`.
+  - At most 8 `iconCandidates`, each `https` or `http`. Candidates whose host is a loopback, private or link-local address are rejected (see §2.2.10).
 - `observedAt` is informational only. Liveness uses the time Rust receives the report.
 
 #### 2.2.7 `unread`
@@ -370,7 +370,7 @@ pub struct OutgoingNotification { pub service: ServiceId, pub title: String, pub
   1. User override: a file (copied into `{data_dir}/icons/<id>.src`) or a URL.
   2. The agent's `iconCandidates`, already ordered best first: `apple-touch-icon`, then `rel=icon` by the largest declared `sizes`, then `/favicon.ico`.
   3. If nothing succeeds, no PNG is stored and the shell renders the generated letter icon (step 5).
-- Download uses `reqwest` without cookies, a 5s timeout and a 1 MiB cap. The image is decoded, resized to 128×128 PNG, and stored at `{data_dir}/icons/<id>.png`.
+- Download uses `reqwest` without cookies, a 5s timeout and a 1 MiB cap. The destination of the request and of every redirect it follows must not resolve to a loopback, private or link-local address; otherwise the download fails. The image is decoded, resized to 128×128 PNG, and stored at `{data_dir}/icons/<id>.png`.
 - Resolution runs only when there is no cached PNG or the user clicked "Refresh icon". After it succeeds, the shell receives `services-changed`.
 - The shell renders the PNG through Tauri's asset protocol. `assetProtocol.scope` is limited to `$APPDATA/icons/**`.
 
