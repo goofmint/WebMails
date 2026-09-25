@@ -47,6 +47,24 @@ For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/
 - [ ] Built with `--features host-child-windows`: the shell and the hard-coded test service render correctly, switching (would-be) services relays out and focuses correctly, and drag-resizing, drag-moving, minimising/restoring and closing the main window all keep the service window(s) in sync (matching geometry offscreen/onscreen, closed on quit) with no gap, overlap, stale geometry or crash (macOS)
 - [ ] Same, on Windows 11
 
+### Task 1.9 — Shell commands, events and capability
+
+`shell`/`settings` have no frontend UI yet (Task 1.10/1.12), so every check below is driven from DevTools, following SP3's procedure (`docs/spikes/SP3.md`): open the `shell` webview's DevTools and run `window.__TAURI_INTERNALS__.invoke("<command>", { ... })` / `window.__TAURI_INTERNALS__.invoke("get_snapshot")` in its console. Run once with the default `MultiwebviewHost` and once with `--features host-child-windows` (`ChildWindowHost`) — both build `shell.json`'s two webview labels the same way, but only a real build proves each backend applies it. For each item, record date, platform and result (pass/fail, with notes) before checking it off.
+
+- [ ] `invoke("get_snapshot")` from the `shell` webview's DevTools console succeeds and returns `settings`, `services`, an empty `statuses`, and `sidebarWidth` equal to `64` (macOS, default host)
+- [ ] Same, Windows 11
+- [ ] Same, macOS with `--features host-child-windows`
+- [ ] The same `invoke("get_snapshot")` call from a `svc-<id>` service webview's DevTools console is rejected (no `allow-get-snapshot` permission there) — try both the default host and `--features host-child-windows` (macOS)
+- [ ] Same rejection, Windows 11
+- [ ] With `config.toml` edited to an invalid file (e.g. a missing required key) before launch, `get_snapshot` returns a `configError` with the file path, the offending key and a reason, and `settings` is `null` (macOS)
+- [ ] Same invalid-`config.toml` → `configError` behaviour, Windows 11
+- [ ] Calling `invoke("open_settings")` twice in a row leaves exactly one settings window open (not two), and it is focused after the second call (macOS)
+- [ ] Same single-window behaviour, Windows 11
+- [ ] `add_service`, `update_service`, `remove_service`, `reorder_services` each produce a `services-changed` event observable via `window.__TAURI_INTERNALS__.invoke` + a `listen`-equivalent DevTools snippet (or `open_settings` + DevTools on that window) in both the `shell` and the `settings` webview (macOS)
+- [ ] Same cross-webview `services-changed` delivery, Windows 11
+- [ ] `select_service` moves the target service's webview into the content area and emits `select-service` (`{ serviceId }`) observable from the `shell` webview only (macOS)
+- [ ] Same, Windows 11
+
 ## M2 — Unread
 
 Exit criterion (SPEC §16): N Gmail accounts plus iCloud show live counts while the window is in the background.

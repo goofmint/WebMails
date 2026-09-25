@@ -129,7 +129,7 @@ pub struct Settings {
 /// value; this module assumes it must be an http(s) URL, the same
 /// constraint as a service's own `url` (§6), since both are fetched by a
 /// webview.
-#[derive(Serialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "source", content = "value", rename_all = "lowercase")]
 pub enum IconSource {
     /// Use the service's own favicon.
@@ -189,7 +189,14 @@ impl Config {
 /// caller can always point the user at a location in the file. It is
 /// `None` only for failures that precede key resolution entirely (I/O
 /// errors, TOML syntax errors).
-#[derive(Debug, thiserror::Error)]
+///
+/// `Clone` and `Serialize` (task 1.9): [`crate::services::ServiceManager`]
+/// keeps one of these when startup fails (design.md §5.1) and hands a
+/// clone of it to `get_snapshot`'s `configError` field on every call —
+/// `Serialize` (with `file`/`key`/`reason` as plain, already-camelCase-safe
+/// single-word keys, so no `rename` is needed) is what lets that DTO field
+/// reach the shell as JSON.
+#[derive(Debug, Clone, thiserror::Error, Serialize)]
 #[error("{}: {}: {reason}", file.display(), key_or_root(key))]
 pub struct ConfigError {
     pub file: PathBuf,
