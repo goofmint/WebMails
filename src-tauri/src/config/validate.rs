@@ -279,13 +279,16 @@ pub fn parse(text: &str, file: &Path) -> Result<Config, ConfigError> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::config::model::IconSource;
     use std::path::PathBuf;
 
     /// SPEC.md §6, lines 146–189: the documented example, verbatim.
-    const SPEC_EXAMPLE: &str = r#"
+    ///
+    /// Shared with [`crate::config::store`]'s tests (`pub(crate)`, see
+    /// tasks.md Task 1.3).
+    pub(crate) const SPEC_EXAMPLE: &str = r#"
 version = 1
 
 [settings]
@@ -334,7 +337,10 @@ icon = { source = "favicon" }
     /// `services[0].notifications` is deliberately `false`, distinct from
     /// `settings.notifications = true`, so tests can target either one by
     /// an unambiguous string replacement.
-    const MINIMAL_VALID_CONFIG: &str = r#"
+    ///
+    /// Shared with [`crate::config::store`]'s tests (`pub(crate)`, see
+    /// tasks.md Task 1.3).
+    pub(crate) const MINIMAL_VALID_CONFIG: &str = r#"
 version = 1
 
 [settings]
@@ -378,11 +384,15 @@ notifications = true
 icon = { source = "favicon" }
 "#;
 
-    fn test_file() -> PathBuf {
+    /// Shared with [`crate::config::store`]'s tests (`pub(crate)`, see
+    /// tasks.md Task 1.3).
+    pub(crate) fn test_file() -> PathBuf {
         PathBuf::from("/tmp/eluma/config.toml")
     }
 
-    fn replace_once(base: &str, from: &str, to: &str) -> String {
+    /// Shared with [`crate::config::store`]'s tests (`pub(crate)`, see
+    /// tasks.md Task 1.3).
+    pub(crate) fn replace_once(base: &str, from: &str, to: &str) -> String {
         assert_eq!(
             base.matches(from).count(),
             1,

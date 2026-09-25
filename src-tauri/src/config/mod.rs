@@ -1,17 +1,20 @@
-//! Load, validate and (on first launch) create `config.toml`
+//! Load, validate, create and edit `config.toml`
 //! (design.md §2.2.1, SPEC.md §6).
 //!
 //! Every key in the file is required. A missing or invalid key fails with
 //! a [`ConfigError`] that names the file, the key and the reason; nothing
 //! is ever filled in from a default (design.md §2.2.1, §10, §5.1).
 //!
-//! `apply` — atomic, comment-preserving edits with `toml_edit` — is Task
-//! 1.3 (design.md §2.2.1) and is not implemented here.
+//! [`store::apply`] applies a typed [`store::ConfigEdit`] with `toml_edit`,
+//! preserving comments and formatting, and writes the result atomically
+//! with [`write_atomic`] (design.md §2.2.1).
 
 mod model;
+mod store;
 mod validate;
 
 pub use model::{Config, ConfigError, IconSource, ProfileName, ServiceConfig, ServiceId, Settings};
+pub use store::{apply, ConfigEdit, ServicePatch, SettingsPatch};
 pub use validate::parse;
 
 use std::io;
@@ -81,6 +84,51 @@ fn temp_path(path: &Path) -> Result<std::path::PathBuf, ConfigError> {
     let mut name = file_name.to_os_string();
     name.push(".init.tmp");
     Ok(path.with_file_name(name))
+}
+
+/// Atomically replaces the contents of an existing `path` with `text`, for
+/// [`store::apply`]'s comment-preserving edits. Writes and syncs a
+/// temporary file in the same directory as `path`, then publishes it with
+/// `std::fs::rename` (unlike [`temp_path`]'s `hard_link`, which requires
+/// that `path` not already exist).
+///
+/// If the write, sync or rename fails, the temporary file is removed
+/// (best effort) and a `ConfigError` with no key is returned; `path` is
+/// left untouched. After a successful rename, the parent directory is
+/// synced on platforms that support it; a failure to sync the directory
+/// is not treated as fatal, since the rename itself already succeeded.
+fn write_atomic(path: &Path, text: &str) -> Result<(), ConfigError> {
+    let Some(file_name) = path.file_name() else {
+        return Err(ConfigError {
+            file: path.to_path_buf(),
+            key: None,
+            reason: "config path has no file name".to_string(),
+        });
+    };
+    let mut name = file_name.to_os_string();
+    name.push(".edit.tmp");
+    let tmp = path.with_file_name(name);
+
+    let result = std::fs::File::create(&tmp)
+        .and_then(|mut file| {
+            use std::io::Write as _;
+            file.write_all(text.as_bytes())?;
+            file.sync_all()
+        })
+        .and_then(|()| std::fs::rename(&tmp, path));
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result.map_err(|err| io_error(path, err))?;
+
+    if let Some(parent) = path.parent() {
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
+
+    Ok(())
 }
 
 /// Loads the configuration at `path`, writing the initial file first if
