@@ -11,7 +11,7 @@
 mod backend;
 mod key;
 
-pub use backend::{
-    remove_webview_data_dir, webview_data_dir, PlatformProfileBackend, ProfileBackend,
-};
+#[cfg(any(target_os = "macos", windows))]
+pub use backend::PlatformProfileBackend;
+pub use backend::{remove_webview_data_dir, webview_data_dir, ProfileBackend};
 pub use key::{resolve, ProfileKey};

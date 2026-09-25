@@ -320,13 +320,19 @@ mod tests {
         // Pinned so an accidental change to `PROFILE_NAMESPACE` or the key
         // format is caught immediately, rather than silently orphaning
         // every existing on-disk profile store (see its doc comment).
-        let mut state = State::empty();
-        let uuid = resolve(&profile_name("default"), &service_id("svc-1"), &mut state);
         assert_eq!(
-            uuid,
-            Uuid::new_v5(&PROFILE_NAMESPACE, b"default"),
-            "PROFILE_NAMESPACE or the key format changed"
+            PROFILE_NAMESPACE.to_string(),
+            "215e6f6b-397e-4625-be56-4f0242052846",
+            "PROFILE_NAMESPACE changed"
         );
+
+        // Expected values were computed independently (Python
+        // `uuid.uuid5(namespace, key)`), not with `PROFILE_NAMESPACE`.
+        let mut state = State::empty();
+        let default = resolve(&profile_name("default"), &service_id("svc-1"), &mut state);
+        assert_eq!(default.to_string(), "4ca2652f-33e5-5ebd-a4b3-10d9a7c48bf1");
+        let isolated = resolve(&profile_name("isolated"), &service_id("svc-1"), &mut state);
+        assert_eq!(isolated.to_string(), "fe5a571f-9dc8-527a-911e-b8499a045c04");
     }
 
     // --- resolve(): existing value wins -----------------------------------
