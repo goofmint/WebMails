@@ -253,6 +253,8 @@ impl<B: ProfileBackend + Send + Sync> WebviewHost for ChildWindowHost<B> {
             .map_err(AppError::from)?
             .decorations(false)
             .focused(false)
+            // Shown only after the physical frame below is applied.
+            .visible(false)
             .position(f64::from(offscreen.x), f64::from(offscreen.y))
             .inner_size(f64::from(offscreen.width), f64::from(offscreen.height))
             .initialization_script(spec.init_script)
@@ -269,6 +271,14 @@ impl<B: ProfileBackend + Send + Sync> WebviewHost for ChildWindowHost<B> {
                 tracing::error!("closing unplaceable service window failed: {close_err}");
             }
             return Err(err);
+        }
+        // Resident and visible from here on, offscreen until activated;
+        // service windows are never hidden (design.md §2.2.4, §8.2).
+        if let Err(err) = window.show() {
+            if let Err(close_err) = window.close() {
+                tracing::error!("closing unshowable service window failed: {close_err}");
+            }
+            return Err(AppError::from(err));
         }
 
         registry.windows.insert(spec.id, window);
