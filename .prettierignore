@@ -1,0 +1,18 @@
+# Build outputs
+dist
+dist-ssr
+src-tauri/target
+src-tauri/gen
+src-tauri/agent-dist
+
+# Lockfile
+pnpm-lock.yaml
+
+# Local tooling config outside this task's scope
+.claude
+.gh
+
+# Docs maintained outside prettier's formatting rules
+SPEC.md
+design.md
+tasks.md
