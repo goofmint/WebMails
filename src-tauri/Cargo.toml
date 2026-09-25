@@ -31,5 +31,13 @@ uuid = { version = "1.26.1", features = ["serde", "v5"] }
 [dev-dependencies]
 tempfile = "3.27.0"
 
+# `host-child-windows` selects the fallback `WebviewHost` implementation,
+# `ChildWindowHost` (design.md §2.2.4, §8.1; Task 1.7), in place of the
+# default `MultiwebviewHost`. No dependency crates are needed for it — it
+# is built entirely on APIs `tauri`'s existing `unstable` feature already
+# enables — so this feature carries no dependency list of its own.
+[features]
+host-child-windows = []
+
 [lints]
 workspace = true
