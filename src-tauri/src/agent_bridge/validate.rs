@@ -56,6 +56,9 @@ pub enum ReportError {
     /// service exists in the live configuration.
     #[error("service does not exist")]
     UnknownService,
+    /// `count` is present and negative.
+    #[error("count must not be negative")]
+    CountNegative,
     /// `count` is present and greater than [`MAX_COUNT`].
     #[error("count exceeds the maximum of {MAX_COUNT}")]
     CountTooLarge,
@@ -102,6 +105,7 @@ impl ReportError {
         match self {
             ReportError::LabelMismatch => "label_mismatch",
             ReportError::UnknownService => "unknown_service",
+            ReportError::CountNegative => "count_negative",
             ReportError::CountTooLarge => "count_too_large",
             ReportError::TooManyMessages => "too_many_messages",
             ReportError::StringTooLong => "string_too_long",
@@ -157,7 +161,7 @@ pub struct ValidMessageRef {
 pub struct ValidReport {
     service_id: ServiceId,
     #[allow(dead_code)]
-    count: Option<i64>,
+    count: Option<u32>,
     #[allow(dead_code)]
     messages: Vec<ValidMessageRef>,
     #[allow(dead_code)]
@@ -196,11 +200,12 @@ pub fn validate(
     let service_url = lookup_service_url(&service_id).ok_or(ReportError::UnknownService)?;
     let service_origin = service_url.origin();
 
-    if let Some(count) = dto.count {
-        if count > MAX_COUNT {
-            return Err(ReportError::CountTooLarge);
-        }
-    }
+    let count = match dto.count {
+        None => None,
+        Some(count) if count < 0 => return Err(ReportError::CountNegative),
+        Some(count) if count > MAX_COUNT => return Err(ReportError::CountTooLarge),
+        Some(count) => Some(u32::try_from(count).map_err(|_| ReportError::CountTooLarge)?),
+    };
 
     if dto.messages.len() > MAX_MESSAGES {
         return Err(ReportError::TooManyMessages);
@@ -266,7 +271,7 @@ pub fn validate(
 
     Ok(ValidReport {
         service_id,
-        count: dto.count,
+        count,
         messages,
         recipe_id,
         observed_at: dto.observed_at,
@@ -412,6 +417,26 @@ mod tests {
     fn rejects_unknown_service() {
         let err = validate(base_dto(), &caller_label(), no_service).unwrap_err();
         assert_eq!(err, ReportError::UnknownService);
+    }
+
+    #[test]
+    fn rejects_a_negative_count() {
+        let mut dto = base_dto();
+        dto.count = Some(-1);
+        let err = validate(dto, &caller_label(), lookup).unwrap_err();
+        assert_eq!(err, ReportError::CountNegative);
+    }
+
+    #[test]
+    fn accepts_zero_and_the_maximum_count() {
+        for count in [0, 1_000_000] {
+            let mut dto = base_dto();
+            dto.count = Some(count);
+            assert!(
+                validate(dto, &caller_label(), lookup).is_ok(),
+                "count {count}"
+            );
+        }
     }
 
     #[test]
