@@ -1,4 +1,6 @@
 mod agent;
+pub mod error;
+pub mod paths;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
