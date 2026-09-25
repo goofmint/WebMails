@@ -33,6 +33,23 @@ pub enum AppError {
     /// could not be applied or removed (design.md §2.2.3).
     #[error("profile error: {0}")]
     Profile(String),
+
+    /// A `WebviewHost` operation failed: webview creation/destruction,
+    /// reload, navigation or relayout, an unknown service id, or a
+    /// duplicate `create` for an id that already has a webview
+    /// (design.md §2.2.4, §5.1: "Webview creation failure").
+    #[error("webview error: {0}")]
+    Webview(String),
+}
+
+/// Wraps a Tauri runtime failure (e.g. `Window::add_child`, `Webview::
+/// set_position/set_size/set_focus/navigate/reload/close`) as
+/// `AppError::Webview`, so `host` code can use `?` directly instead of
+/// converting each call site by hand (design.md §2.2.4).
+impl From<tauri::Error> for AppError {
+    fn from(err: tauri::Error) -> Self {
+        AppError::Webview(err.to_string())
+    }
 }
 
 impl AppError {
@@ -47,6 +64,7 @@ impl AppError {
             AppError::Config(_) => "config",
             AppError::State(_) => "state",
             AppError::Profile(_) => "profile",
+            AppError::Webview(_) => "webview",
         }
     }
 }
@@ -110,6 +128,24 @@ mod tests {
             value,
             json!({ "kind": "profile", "message": err.to_string() })
         );
+    }
+
+    #[test]
+    fn webview_error_serializes_kind_and_message() {
+        let err = AppError::Webview("service 'gmail' already has a webview".to_string());
+        let value = serde_json::to_value(&err).expect("serialize");
+        assert_eq!(err.kind(), "webview");
+        assert_eq!(
+            value,
+            json!({ "kind": "webview", "message": err.to_string() })
+        );
+    }
+
+    #[test]
+    fn tauri_error_converts_to_app_error_with_webview_kind() {
+        let tauri_err = tauri::Error::WebviewNotFound;
+        let err: AppError = tauri_err.into();
+        assert_eq!(err.kind(), "webview");
     }
 
     #[test]

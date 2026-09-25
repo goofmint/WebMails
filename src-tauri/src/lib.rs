@@ -1,13 +1,137 @@
 mod agent;
 pub mod config;
 pub mod error;
+pub mod host;
 pub mod paths;
 pub mod profile;
 pub mod state;
 
+use std::sync::Arc;
+
+use tauri::{Manager, WebviewUrl};
+
+use config::{ProfileName, ServiceId};
+use host::{layout, MultiwebviewHost, ServiceWebviewSpec, WebviewHost};
+use profile::PlatformProfileBackend;
+use state::State;
+
+/// Fixed identifier and public URL for the one hard-coded service this
+/// task creates at startup, so the content area shows something real
+/// before service configuration exists.
+///
+/// Task 1.8 replaces this block with services built from `Config.services`
+/// (design.md §2.2.5); this constant pair and the code that uses it go
+/// away then.
+const TEST_SERVICE_ID: &str = "test-service";
+const TEST_SERVICE_URL: &str = "https://example.com";
+
+/// Reads `window`'s current physical size and scale factor and converts
+/// them to a logical [`layout::content_rect`], the same conversion
+/// `host::multiwebview` uses internally. Kept here (rather than exported
+/// from `host`) since `setup` is the only other call site that needs a
+/// content rect from a live `Window`.
+fn current_content_rect(
+    window: &tauri::Window,
+) -> Result<layout::Rect, Box<dyn std::error::Error>> {
+    let physical = window.inner_size()?;
+    let scale = window.scale_factor()?;
+    let (width, height) =
+        layout::physical_to_logical(physical.width as f64, physical.height as f64, scale);
+    Ok(layout::content_rect(width, height))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| {
+            // `app.windows` is empty in `tauri.conf.json` (design.md §9.2):
+            // the main window is built here in code because it needs
+            // `add_child` (design.md §10).
+            let window = tauri::window::WindowBuilder::new(app, "main")
+                .title("Eluma")
+                .inner_size(800.0, 600.0)
+                .build()?;
+
+            let profile_backend = PlatformProfileBackend::new(app.handle())?;
+            let host = MultiwebviewHost::new(
+                window.clone(),
+                WebviewUrl::App("index.html".into()),
+                profile_backend,
+            )?;
+            let host: Arc<dyn WebviewHost> = Arc::new(host);
+            app.manage(host.clone());
+
+            // Relayout on resize and on display-scale change, skipping
+            // zero-size events (e.g. minimising), which would otherwise
+            // collapse every webview to nothing (design.md §2.2.4).
+            let relayout_window = window.clone();
+            let relayout_host = host.clone();
+            window.on_window_event(move |event| {
+                let (physical_width, physical_height, scale_factor) = match event {
+                    tauri::WindowEvent::Resized(size) => {
+                        let scale_factor = match relayout_window.scale_factor() {
+                            Ok(scale_factor) => scale_factor,
+                            Err(err) => {
+                                tracing::error!("relayout: could not read scale factor: {err}");
+                                return;
+                            }
+                        };
+                        (size.width, size.height, scale_factor)
+                    }
+                    tauri::WindowEvent::ScaleFactorChanged {
+                        scale_factor,
+                        new_inner_size,
+                        ..
+                    } => (new_inner_size.width, new_inner_size.height, *scale_factor),
+                    // `WindowEvent` is not exhaustive on every platform
+                    // (some variants are `cfg(mobile)`-only), and this
+                    // handler only cares about the two above.
+                    _ => return,
+                };
+                if physical_width == 0 || physical_height == 0 {
+                    return;
+                }
+                let (width, height) = layout::physical_to_logical(
+                    physical_width as f64,
+                    physical_height as f64,
+                    scale_factor,
+                );
+                let content = layout::content_rect(width, height);
+                if let Err(err) = relayout_host.relayout(content) {
+                    tracing::error!("relayout failed: {err}");
+                }
+            });
+
+            // One hard-coded test service, so M1 shows the shell plus a
+            // real webview in the content area before service
+            // configuration (Task 1.8) exists. The default profile's UUID
+            // is resolved the same way a real service's will be — via
+            // `profile::resolve` — but against an in-memory `State::empty()`
+            // rather than the persisted store, since state persistence
+            // isn't wired into startup yet (a later task).
+            let default_profile = ProfileName::new("default")?;
+            let test_service_id = ServiceId::new(TEST_SERVICE_ID)?;
+            let mut scratch_state = State::empty();
+            let profile_uuid =
+                profile::resolve(&default_profile, &test_service_id, &mut scratch_state);
+
+            host.create(ServiceWebviewSpec {
+                id: test_service_id.clone(),
+                url: TEST_SERVICE_URL.parse()?,
+                profile: profile_uuid,
+                init_script: String::new(),
+                on_page_load: Box::new(|_webview, _payload| {}),
+            })?;
+            host.activate(&test_service_id)?;
+
+            // Initial relayout, so the shell, the test service, and any
+            // resize that happened between window creation and here all
+            // agree on the current content rect.
+            let content = current_content_rect(&window)?;
+            host.relayout(content)?;
+
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

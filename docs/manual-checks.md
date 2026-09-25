@@ -12,6 +12,21 @@ Exit criterion (SPEC §16): two iCloud accounts signed in side by side; a URL be
 - [ ] Two iCloud accounts are signed in side by side (Windows 11)
 - [ ] Adding a URL in the settings window produces a usable mail tab
 
+### Task 1.6 — `WebviewHost` / `MultiwebviewHost`
+
+For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/fail, with notes) before checking it off.
+
+- [ ] The shell sidebar renders at exactly 64px wide, full window height, with no gap or overlap against the content area (macOS)
+- [ ] The shell sidebar renders at exactly 64px wide, full window height, with no gap or overlap against the content area (Windows 11)
+- [ ] The hard-coded test service (`https://example.com`) is visible and interactive in the content area on launch (macOS)
+- [ ] The hard-coded test service (`https://example.com`) is visible and interactive in the content area on launch (Windows 11)
+- [ ] Drag-resizing the window relays out the shell and the test service with no stale geometry, gap or overlap (macOS)
+- [ ] Drag-resizing the window relays out the shell and the test service with no stale geometry, gap or overlap (Windows 11)
+- [ ] Changing the display scale factor (moving the window to a different-DPI display, or changing OS scaling) relays out both webviews correctly (macOS)
+- [ ] Changing the display scale factor relays out both webviews correctly (Windows 11)
+- [ ] Minimising and restoring the window leaves the shell and the test service in their prior layout, with no crash (macOS)
+- [ ] Minimising and restoring the window leaves the shell and the test service in their prior layout, with no crash (Windows 11)
+
 ## M2 — Unread
 
 Exit criterion (SPEC §16): N Gmail accounts plus iCloud show live counts while the window is in the background.
