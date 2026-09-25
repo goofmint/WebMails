@@ -20,12 +20,35 @@ tauri-build = { version = "2.6.3", features = [] }
 [dependencies]
 tauri = { version = "~2.11.1", features = ["unstable"] }
 serde = "1.0.229"
+serde_json = "1.0.151"
 thiserror = "2.0.21"
 toml = "1.1.6"
 url = { version = "2.5.8", features = ["serde"] }
 
+# --- SP5 spike-only dependencies (docs/spikes/SP5.md, tasks.md Task 4.1) ---
+# Gated behind Cargo features so the throwaway harness in src/spike/ can be
+# built one candidate at a time. None of this is wired into the production
+# app; this whole section is expected to be dropped when the spike branch is
+# discarded (never merged to main).
+user-notify = { version = "0.4.2", optional = true }
+notify-rust = { version = "4.18.0", optional = true, default-features = false, features = [
+  "preview-macos-un",
+] }
+tauri-plugin-notification = { version = "2.4.0", optional = true }
+
+[features]
+default = []
+# `user-notify` 0.4.2 candidate: UNUserNotificationCenter (macOS) /
+# ToastNotificationManager (Windows) click activation.
+sp5-user-notify = ["dep:user-notify"]
+# `notify-rust` 4.18.0 candidate, macOS built with the `preview-macos-un`
+# backend (UNUserNotificationCenter) since the default NSUserNotificationCenter
+# backend is deprecated on macOS 14+; Windows always uses tauri-winrt-notification.
+sp5-notify-rust = ["dep:notify-rust"]
+# Baseline: tauri-plugin-notification 2.4.0, display-only (plugins-workspace#2150).
+sp5-baseline = ["dep:tauri-plugin-notification"]
+
 [dev-dependencies]
-serde_json = "1.0.151"
 tempfile = "3.27.0"
 
 [lints]
