@@ -159,8 +159,9 @@ pub struct ValidMessageRef {
 /// constructor, so a `ValidReport` value is a type-level proof of
 /// validity.
 ///
-/// `service_id` is read by `report_unread`'s success log line; `count`
-/// and `messages` are read by task 4.4's `notify::diff::evaluate`.
+/// `service_id` and `count` are read by `report_unread`'s success path
+/// (the log line and the `unread` status store, design.md §2.2.7);
+/// `count` and `messages` are also read by `notify::diff::evaluate`.
 /// `recipe_id`, `observed_at` and `icon_candidates` have no consumer yet
 /// (later tasks: notification text and icon resolution), so they stay
 /// `#[allow(dead_code)]` rather than fabricating a reader that doesn't

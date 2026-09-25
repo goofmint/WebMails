@@ -57,14 +57,15 @@ pub(crate) use validate::validate;
 /// rejects the report as a label mismatch before ever consulting this
 /// lookup's result.
 ///
-/// On success there is no consumer yet — Task 2.3 adds the `unread`
-/// status store that a validated report will feed — so this only emits
-/// a debug log line naming the service id and returns `Ok(())`. On
-/// rejection, only the service id and the rejection's `kind()` are
-/// logged (never the report's contents), and the report is dropped:
-/// the agent is not notified (design.md §5.1), so the command still
-/// returns `Ok(())`. The `Result` return type is kept because Tauri
-/// requires it for async commands that borrow managed state.
+/// On success, the report's count feeds the `unread` status store
+/// (design.md §2.2.7: `Some(n)` → `Ok`, `None` →
+/// `NeedsAttention(ReportedNone)`) via [`ServiceManager::record_report`],
+/// then a debug log line naming the service id is emitted and `Ok(())`
+/// is returned. On rejection, only the service id and the rejection's
+/// `kind()` are logged (never the report's contents), and the report is
+/// dropped: the agent is not notified (design.md §5.1), so the command
+/// still returns `Ok(())`. The `Result` return type is kept because
+/// Tauri requires it for async commands that borrow managed state.
 #[tauri::command]
 pub async fn report_unread(
     webview: tauri::Webview,
@@ -94,10 +95,9 @@ pub async fn report_unread(
 
     match validate::validate(report, &label, &caller_url, |_id| service_url) {
         Ok(valid_report) => {
-            // Task 2.3's `unread` status store will consume `valid_report`
-            // here once it exists too; until then, dispatching a
-            // notification (Task 4.5) is the only consumer beyond this
-            // log line.
+            services
+                .inner()
+                .record_report(valid_report.service_id(), valid_report.count());
             tracing::debug!(
                 service_id = %valid_report.service_id(),
                 "accepted unread report"

@@ -74,9 +74,9 @@ const SETTINGS_WINDOW_LABEL: &str = "settings";
 /// (Task 1.12 builds the screen itself; this task only opens the window).
 const SETTINGS_WINDOW_PATH: &str = "index.html#/settings";
 
-/// Returns the current settings, services (sidebar order), an always-empty
-/// status map (Task 2.3), the sidebar width, and — only when this app
-/// failed to start — a structured `configError` (design.md §2.2.12).
+/// Returns the current settings, services (sidebar order), the `unread`
+/// status map (design.md §2.2.7), the sidebar width, and — only when this
+/// app failed to start — a structured `configError` (design.md §2.2.12).
 #[tauri::command]
 pub async fn get_snapshot(
     manager: State<'_, Arc<ServiceManager>>,
@@ -86,6 +86,7 @@ pub async fn get_snapshot(
         snapshot.settings,
         snapshot.services,
         snapshot.config_error,
+        snapshot.statuses,
         SIDEBAR_WIDTH,
     ))
 }
