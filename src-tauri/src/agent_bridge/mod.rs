@@ -41,8 +41,10 @@ pub use validate::ReportError;
 /// status store that a validated report will feed — so this only emits
 /// a debug log line naming the service id and returns `Ok(())`. On
 /// rejection, only the service id and the rejection's `kind()` are
-/// logged (never the report's contents), and the [`ReportError`] itself
-/// is returned to the caller.
+/// logged (never the report's contents), and the report is dropped:
+/// the agent is not notified (design.md §5.1), so the command still
+/// returns `Ok(())`. The `Result` return type is kept because Tauri
+/// requires it for async commands that borrow managed state.
 #[tauri::command]
 pub async fn report_unread(
     webview: tauri::Webview,
@@ -74,7 +76,7 @@ pub async fn report_unread(
                 rejection = err.kind(),
                 "rejected unread report"
             );
-            Err(err)
+            Ok(())
         }
     }
 }

@@ -10,7 +10,18 @@
 //! responsible for turning a (successfully deserialized) DTO into a
 //! [`super::validate::ValidReport`] or rejecting it.
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
+
+/// Deserializes a nullable field whose key must still be present:
+/// `null` becomes `None`, but an omitted key is an error. (A plain
+/// `Option<T>` field would silently default a missing key to `None`.)
+fn required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
 
 /// A report of a service's unread state, as sent by the agent's
 /// `report.ts` (design.md §2.2.6).
@@ -23,6 +34,7 @@ use serde::Deserialize;
 #[serde(rename_all = "camelCase")]
 pub struct UnreadReportDto {
     pub service_id: String,
+    #[serde(deserialize_with = "required_nullable")]
     pub count: Option<i64>,
     pub messages: Vec<MessageRefDto>,
     pub recipe_id: String,
@@ -36,8 +48,11 @@ pub struct UnreadReportDto {
 #[serde(rename_all = "camelCase")]
 pub struct MessageRefDto {
     pub id: String,
+    #[serde(deserialize_with = "required_nullable")]
     pub from: Option<String>,
+    #[serde(deserialize_with = "required_nullable")]
     pub subject: Option<String>,
+    #[serde(deserialize_with = "required_nullable")]
     pub link: Option<String>,
 }
 
@@ -120,5 +135,30 @@ mod tests {
 
         let result: Result<UnreadReportDto, _> = serde_json::from_value(json);
         assert!(result.is_err(), "missing observedAt must not default to 0");
+    }
+
+    #[test]
+    fn rejects_an_omitted_nullable_key() {
+        let json = serde_json::json!({
+            "serviceId": "gmail-personal",
+            "messages": [],
+            "recipeId": "gmail",
+            "observedAt": 1_700_000_000_000_u64,
+            "iconCandidates": [],
+        });
+        assert!(serde_json::from_value::<UnreadReportDto>(json).is_err());
+
+        let message = serde_json::json!({ "id": "m1", "from": null, "subject": null });
+        assert!(serde_json::from_value::<MessageRefDto>(message).is_err());
+    }
+
+    #[test]
+    fn accepts_explicit_nulls() {
+        let message =
+            serde_json::json!({ "id": "m1", "from": null, "subject": null, "link": null });
+        let parsed =
+            serde_json::from_value::<MessageRefDto>(message).expect("explicit nulls are valid");
+        assert_eq!(parsed.from, None);
+        assert_eq!(parsed.link, None);
     }
 }
