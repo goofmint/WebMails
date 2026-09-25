@@ -171,6 +171,21 @@ fn parse_icon(table: &Table, parent: &str, file: &Path) -> Result<IconSource, Co
             if value.is_empty() {
                 return Err(invalid(file, &value_key, "must not be empty"));
             }
+            // File icons live under `{data_dir}` (SPEC §11.1), so the value
+            // must be a relative path that stays inside it.
+            let escapes = std::path::Path::new(value).components().any(|c| {
+                !matches!(
+                    c,
+                    std::path::Component::Normal(_) | std::path::Component::CurDir
+                )
+            });
+            if escapes {
+                return Err(invalid(
+                    file,
+                    &value_key,
+                    "must be a relative path without `..` components",
+                ));
+            }
             Ok(IconSource::File(value.into()))
         }
         "url" => Ok(IconSource::Url(require_http_url(
@@ -603,5 +618,35 @@ icon = { source = "favicon" }
         let err = parse("[settings\nversion = 1", &file).expect_err("malformed TOML should fail");
         assert_eq!(err.key, None);
         assert!(err.to_string().contains("/tmp/eluma/broken-config.toml"));
+    }
+
+    #[test]
+    fn file_icon_must_stay_inside_the_data_dir() {
+        for value in ["/etc/passwd", "../outside.png", "icons/../../outside.png"] {
+            let text = SPEC_EXAMPLE.replace(
+                r#"value = "icons/icloud.png""#,
+                &format!("value = {value:?}"),
+            );
+            let err = parse(&text, &PathBuf::from("config.toml"))
+                .expect_err("an escaping file icon path must be rejected");
+            assert_eq!(
+                err.key.as_deref(),
+                Some("services[2].icon.value"),
+                "value {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn file_icon_accepts_a_nested_relative_path() {
+        let text = SPEC_EXAMPLE.replace(
+            r#"value = "icons/icloud.png""#,
+            r#"value = "./icons/mail/icloud.png""#,
+        );
+        let config = parse(&text, &PathBuf::from("config.toml")).expect("relative path is valid");
+        assert_eq!(
+            config.services[2].icon,
+            IconSource::File(PathBuf::from("./icons/mail/icloud.png"))
+        );
     }
 }

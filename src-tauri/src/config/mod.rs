@@ -34,9 +34,12 @@ pub fn load(path: &Path) -> Result<Config, ConfigError> {
 /// Writes a complete configuration file for first launch: every settings
 /// key set explicitly to the value documented in SPEC.md §6, and no
 /// services (see [`Config::initial`]). Creates the parent directory if
-/// needed. Never overwrites an existing file — the write uses
-/// `create_new`, so a pre-existing file at `path` is an error, not a
-/// silent replacement.
+/// needed.
+///
+/// The content is written and synced to a temporary file in the same
+/// directory first, then published with `hard_link`, which fails if a file
+/// already exists at `path`. So an existing file is never overwritten, and
+/// a failed write never leaves a partial `config.toml` behind.
 pub fn write_initial(path: &Path) -> Result<Config, ConfigError> {
     let config = Config::initial();
 
@@ -50,17 +53,34 @@ pub fn write_initial(path: &Path) -> Result<Config, ConfigError> {
         reason: err.to_string(),
     })?;
 
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
+    let tmp = temp_path(path)?;
+    let published = std::fs::File::create(&tmp)
         .and_then(|mut file| {
             use std::io::Write as _;
-            file.write_all(text.as_bytes())
+            file.write_all(text.as_bytes())?;
+            file.sync_all()
         })
-        .map_err(|err| io_error(path, err))?;
+        .and_then(|()| std::fs::hard_link(&tmp, path));
+    let cleanup = std::fs::remove_file(&tmp);
+    published.map_err(|err| io_error(path, err))?;
+    cleanup.map_err(|err| io_error(&tmp, err))?;
 
     Ok(config)
+}
+
+/// Temporary file used by [`write_initial`]: same directory as `path`, so
+/// publishing it is a same-filesystem link.
+fn temp_path(path: &Path) -> Result<std::path::PathBuf, ConfigError> {
+    let Some(file_name) = path.file_name() else {
+        return Err(ConfigError {
+            file: path.to_path_buf(),
+            key: None,
+            reason: "config path has no file name".to_string(),
+        });
+    };
+    let mut name = file_name.to_os_string();
+    name.push(".init.tmp");
+    Ok(path.with_file_name(name))
 }
 
 /// Loads the configuration at `path`, writing the initial file first if
@@ -115,6 +135,29 @@ mod tests {
             write_initial(&path).expect_err("write_initial must not overwrite an existing file");
         assert_eq!(err.key, None);
         assert_eq!(fs::read_to_string(&path).expect("read back"), "not touched");
+    }
+
+    #[test]
+    fn write_initial_leaves_no_temporary_file() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = config_path(&dir);
+
+        write_initial(&path).expect("write_initial should succeed");
+        let names: Vec<_> = fs::read_dir(dir.path())
+            .expect("list dir")
+            .map(|entry| entry.expect("dir entry").file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("config.toml")]);
+    }
+
+    #[test]
+    fn write_initial_on_an_existing_file_leaves_no_temporary_file() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = config_path(&dir);
+        fs::write(&path, "not touched").expect("seed an existing file");
+
+        write_initial(&path).expect_err("write_initial must not overwrite an existing file");
+        assert!(!dir.path().join("config.toml.init.tmp").exists());
     }
 
     #[test]
