@@ -4,6 +4,7 @@ pub mod config;
 pub mod error;
 pub mod host;
 pub mod paths;
+mod platform;
 pub mod profile;
 pub mod services;
 pub mod state;

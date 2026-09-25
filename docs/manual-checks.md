@@ -80,6 +80,10 @@ Exit criterion (SPEC §16): badges still correct after 2 hours minimised, on bot
 - [ ] Badges match the real inboxes after 2 hours minimised (Windows 10), or the degraded state is documented
 - [ ] Memory use per service recorded (R7)
 
+### Task 3.1 — macOS App Nap assertion
+
+- [ ] With at least one service configured, run `pmset -g assertions` while Eluma runs (e.g. minimised or backgrounded) and confirm a `PreventUserIdleSystemSleep` (or equivalent `NSActivityUserInitiated`-backed) assertion is listed for the Eluma process, plus the `app_nap: acquired activity assertion` / `app_nap: released activity assertion` log lines appear exactly once each as the last service is added/removed (macOS)
+
 ## M4 — Notifications
 
 Exit criterion (SPEC §16): iCloud fires a native notification with Eluma in the background.
