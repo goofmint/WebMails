@@ -1,4 +1,5 @@
 mod agent;
+pub mod agent_bridge;
 mod commands;
 pub mod config;
 pub mod error;
@@ -45,6 +46,7 @@ pub fn run() {
             commands::update_settings,
             commands::open_settings,
             commands::reload_service,
+            agent_bridge::report_unread,
         ])
         .setup(|app| {
             // `app.windows` is empty in `tauri.conf.json` (design.md §9.2):

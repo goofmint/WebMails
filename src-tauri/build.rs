@@ -1,5 +1,5 @@
 fn main() {
-    // Declares the nine `commands/` app commands (design.md §2.2.12; Task
+    // Declares the nine `commands/` app commands and `report_unread` (design.md §2.2.12; Task
     // 1.9) so tauri-build autogenerates their ACL permissions
     // (`allow-<kebab-command>`), the same pattern the `spike/m0-harness`
     // branch validated for `report_unread` (SP3): after a real build, each
@@ -22,6 +22,9 @@ fn main() {
             "update_settings",
             "open_settings",
             "reload_service",
+            // Task 2.1 (design.md §2.2.6): granted only through the runtime
+            // per-service capability (Task 2.2), never through shell.json.
+            "report_unread",
         ]),
     ))
     .expect("failed to run tauri-build for eluma");
