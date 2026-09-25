@@ -1,0 +1,19 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "shell",
+  "description": "Capability for the shell and settings webviews (design.md §4.3). Scoped by webview label, not window label, so it never reaches the `svc-<id>` service webviews that share the `main` window. Grants the app commands declared in build.rs (`allow-<kebab-command>`), `core:event:default` for the shell's event listeners, and `core:window:allow-set-focus`; no `core:default`.",
+  "webviews": ["shell", "settings"],
+  "permissions": [
+    "allow-get-snapshot",
+    "allow-add-service",
+    "allow-update-service",
+    "allow-remove-service",
+    "allow-reorder-services",
+    "allow-select-service",
+    "allow-update-settings",
+    "allow-open-settings",
+    "allow-reload-service",
+    "core:event:default",
+    "core:window:allow-set-focus"
+  ]
+}

@@ -29,12 +29,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use serde::Serialize;
 use tauri::async_runtime::Mutex;
 use tauri::{AppHandle, Emitter, Wry};
 use url::Url;
 use uuid::Uuid;
 
-use crate::config::{self, Config, ConfigEdit, IconSource, ProfileName, ServiceConfig, ServiceId};
+use crate::config::{
+    self, Config, ConfigEdit, ConfigError, IconSource, ProfileName, ServiceConfig, ServiceId,
+    ServicePatch, Settings, SettingsPatch,
+};
 use crate::error::{AppError, AppResult};
 use crate::host::{ServiceWebviewSpec, WebviewHost};
 use crate::profile::{self, PlatformProfileBackend, ProfileBackend, ProfileKey};
@@ -44,15 +48,25 @@ use crate::state::StateStore;
 /// §2.2.5).
 pub const STARTUP_STAGGER: Duration = Duration::from_millis(1500);
 
-/// The event emitted to the `shell` webview whenever an edit changes the
-/// set, order or per-service metadata of services (design.md §2.2.5).
-/// Task 1.9 defines its real payload (a full snapshot); this task emits
-/// it with a minimal placeholder payload.
+/// The event emitted to the `shell` and `settings` webviews whenever an
+/// edit changes the set, order or per-service metadata of services
+/// (design.md §2.2.5), carrying the new `services` list in sidebar order.
 const SERVICES_CHANGED_EVENT: &str = "services-changed";
 
-/// The webview label every shell-only event (this one included) targets
-/// (design.md §2.2.4).
+/// The event emitted to the `shell` webview when [`ServiceManager::
+/// select_service`] activates a service (design.md §2.2.12), carrying
+/// `{ serviceId }`.
+const SELECT_SERVICE_EVENT: &str = "select-service";
+
+/// The webview label the shell (sidebar) runs under (design.md §2.2.4).
 const SHELL_LABEL: &str = "shell";
+
+/// The webview label the settings window runs under (design.md §2.2.12,
+/// §2.2.13; Task 1.9). Unlike `SHELL_LABEL`, this webview may not exist
+/// yet when an event is emitted — `open_settings` creates it lazily — so
+/// `emit_to` targeting this label before then is simply a no-op, not an
+/// error.
+const SETTINGS_LABEL: &str = "settings";
 
 /// Whether the removed service's `profile` name marks it as having a
 /// private, per-service profile (design.md §2.2.3's `"isolated"`
@@ -89,11 +103,18 @@ struct Ready {
 /// [`StateStore::open`] failed with at startup (design.md §5.1).
 enum ManagerState {
     /// No services were started and the file on disk was never touched.
-    /// Kept so a later command (Task 1.9) can surface it to the shell.
+    /// Kept as a [`ConfigError`] — not the less-structured [`AppError`] —
+    /// so [`ServiceManager::snapshot`] can hand `get_snapshot`'s
+    /// `configError` field (design.md §2.2.12) the same `{ file, key,
+    /// reason }` shape regardless of which of the two startup loads
+    /// failed: a `config.toml` failure already produces a [`ConfigError`]
+    /// directly, and `lib.rs`'s `setup` hook builds an equivalent one
+    /// (file = the state path, key = `None`) for a `state.json` failure,
+    /// so this module never needs to know which of the two it was.
     /// Editing (`apply_edit`, `add_service`, `remove_service`) is refused
     /// in this state: there is no valid `Config` to build an edit
     /// against, and this app never repairs an existing file.
-    Failed(AppError),
+    Failed(ConfigError),
     Ready(Ready),
 }
 
@@ -136,14 +157,18 @@ impl ServiceManager {
 
     /// Builds a manager that failed to load its configuration or state at
     /// startup (design.md §5.1): no services are started, the file is
-    /// never repaired, and `error` is kept for a later command to
-    /// surface.
+    /// never repaired, and `error` is kept for [`Self::snapshot`] to
+    /// surface as `get_snapshot`'s `configError` (Task 1.9). For a
+    /// `state.json` failure, the caller (`lib.rs`'s `setup` hook) builds
+    /// this from the state path and the underlying [`AppError`]'s message,
+    /// since [`crate::state::StateStore::open`] does not itself produce a
+    /// structured [`ConfigError`].
     pub fn failed(
         host: Arc<dyn WebviewHost>,
         profile_backend: PlatformProfileBackend,
         app_handle: AppHandle<Wry>,
         config_path: PathBuf,
-        error: AppError,
+        error: ConfigError,
     ) -> Self {
         ServiceManager {
             host,
@@ -469,7 +494,7 @@ impl ServiceManager {
         drop(guard);
 
         if plan.services_changed {
-            self.emit_services_changed();
+            self.emit_services_changed(&new_config.services);
         }
 
         Ok(new_config)
@@ -484,7 +509,7 @@ impl ServiceManager {
     /// Adds a new service: derives its id from `name` with
     /// [`slug::slugify`] against the current config's ids, then applies
     /// [`ConfigEdit::AddService`] the same way any other edit is applied.
-    /// Returns the new service's id on success.
+    /// Returns the new service's config on success.
     ///
     /// A collision between two concurrent `add_service` calls that
     /// happen to derive the same slug is caught by `config::apply`'s own
@@ -499,7 +524,7 @@ impl ServiceManager {
         profile: ProfileName,
         notifications: bool,
         icon: IconSource,
-    ) -> AppResult<ServiceId> {
+    ) -> AppResult<ServiceConfig> {
         let existing = {
             let guard = self.inner.lock().await;
             match &*guard {
@@ -515,16 +540,120 @@ impl ServiceManager {
         let id = slug::slugify(name, &existing);
 
         let service = ServiceConfig {
-            id: id.clone(),
+            id,
             name: name.to_string(),
             url,
             profile,
             notifications,
             icon,
         };
-        self.apply_edit_inner(ConfigEdit::AddService(service))
+        self.apply_edit_inner(ConfigEdit::AddService(service.clone()))
             .await?;
-        Ok(id)
+        Ok(service)
+    }
+
+    /// Updates an existing service's patchable fields (design.md §2.2.1,
+    /// §2.2.5; Task 1.9's `update_service` command): applies
+    /// [`ConfigEdit::UpdateService`], which — as an ordinary part of the
+    /// edit-and-reconcile path `apply_edit_inner` already runs — recreates
+    /// the live webview (and reactivates it, if it was active) when `url`
+    /// or `profile` changed, or updates sidebar metadata in place
+    /// otherwise (`reconcile::diff`'s `Recreate`/`UpdateInPlace`, design.md
+    /// §2.2.5's per-field table). Returns the updated `ServiceConfig`.
+    pub async fn update_service(
+        &self,
+        id: &ServiceId,
+        patch: ServicePatch,
+    ) -> AppResult<ServiceConfig> {
+        let new_config = self
+            .apply_edit_inner(ConfigEdit::UpdateService(id.clone(), patch))
+            .await?;
+        new_config
+            .services
+            .into_iter()
+            .find(|service| service.id == *id)
+            .ok_or_else(|| {
+                AppError::Config(format!(
+                    "service '{id}' missing from config immediately after updating it"
+                ))
+            })
+    }
+
+    /// Reorders the sidebar (design.md §2.2.5's `reorder` case: applying
+    /// [`ConfigEdit::Reorder`] never touches a live webview, only the
+    /// `services-changed` event `apply_edit_inner` emits when the order
+    /// changed).
+    pub async fn reorder_services(&self, order: Vec<ServiceId>) -> AppResult<()> {
+        self.apply_edit(ConfigEdit::Reorder(order)).await
+    }
+
+    /// Updates `[settings]` (design.md §2.2.1). Never touches a live
+    /// webview or emits `services-changed` — `reconcile::diff` produces an
+    /// empty plan for a settings-only edit. Returns the updated
+    /// `Settings`.
+    pub async fn update_settings(&self, patch: SettingsPatch) -> AppResult<Settings> {
+        let new_config = self
+            .apply_edit_inner(ConfigEdit::UpdateSettings(patch))
+            .await?;
+        Ok(new_config.settings)
+    }
+
+    /// Activates `id` (design.md §2.2.12's `select_service` command):
+    /// moves its webview to the content rect and focuses it (every other
+    /// registered service moves offscreen, `WebviewHost::activate`'s own
+    /// contract), records it as the active service, and emits
+    /// `select-service` to the shell. Does not touch `config.toml` — this
+    /// is a pure UI-selection action, not an edit.
+    ///
+    /// Errors (without recording anything or emitting) if this manager
+    /// never started, or if `host.activate` fails — most commonly because
+    /// `id` has no live webview yet (still waiting for its staggered
+    /// startup turn, or never created due to a startup failure).
+    pub async fn select_service(&self, id: &ServiceId) -> AppResult<()> {
+        let mut guard = self.inner.lock().await;
+        let ready = match &mut *guard {
+            ManagerState::Failed(err) => return Err(not_ready(err)),
+            ManagerState::Ready(ready) => ready,
+        };
+        self.host.activate(id)?;
+        ready.active = Some(id.clone());
+        drop(guard);
+
+        self.emit_select_service(id);
+        Ok(())
+    }
+
+    /// Reloads `id`'s current page (design.md §2.2.12's `reload_service`
+    /// command). Delegates straight to `WebviewHost::reload`, which errors
+    /// for an id with no live webview; that host error is returned
+    /// unchanged, matching every other host-facing command here.
+    pub async fn reload_service(&self, id: &ServiceId) -> AppResult<()> {
+        self.host.reload(id)
+    }
+
+    /// A read-only snapshot of everything `get_snapshot` (Task 1.9) needs
+    /// from this manager: the current settings and services when this
+    /// manager started successfully, or the structured [`ConfigError`]
+    /// that stopped it from starting at all (design.md §5.1). `settings`
+    /// is `None` exactly when `config_error` is `Some` — this manager
+    /// never fabricates a default `Settings` to fill the gap (project
+    /// rule: no fallback defaults) — and `services` is an empty `Vec` in
+    /// that case, which is a genuine, not-fabricated value: no service was
+    /// started.
+    pub async fn snapshot(&self) -> ManagerSnapshot {
+        let guard = self.inner.lock().await;
+        match &*guard {
+            ManagerState::Failed(config_error) => ManagerSnapshot {
+                settings: None,
+                services: Vec::new(),
+                config_error: Some(config_error.clone()),
+            },
+            ManagerState::Ready(ready) => ManagerSnapshot {
+                settings: Some(ready.config.settings.clone()),
+                services: ready.config.services.clone(),
+                config_error: None,
+            },
+        }
     }
 
     /// Removes an existing service (design.md §2.2.5): applies
@@ -610,23 +739,71 @@ impl ServiceManager {
         Ok(())
     }
 
-    fn emit_services_changed(&self) {
+    /// Emits `services-changed` — `{ services: [...] }`, `services` in
+    /// sidebar order — to both the `shell` and `settings` webviews (Task
+    /// 1.9; design.md §2.2.12). `emit_to` a label with no current webview
+    /// (typically `settings`, only created lazily by `open_settings`) is
+    /// not an error; each target is still attempted independently so one
+    /// failing does not suppress the other.
+    fn emit_services_changed(&self, services: &[ServiceConfig]) {
+        let payload = ServicesChangedPayload { services };
+        for label in [SHELL_LABEL, SETTINGS_LABEL] {
+            if let Err(err) = self
+                .app_handle
+                .emit_to(label, SERVICES_CHANGED_EVENT, &payload)
+            {
+                tracing::warn!("failed to emit {SERVICES_CHANGED_EVENT} to '{label}': {err}");
+            }
+        }
+    }
+
+    /// Emits `select-service` — `{ serviceId }` — to the `shell` webview
+    /// only (Task 1.9; design.md §2.2.12): unlike `services-changed`, the
+    /// settings window has no use for which service tab is active.
+    fn emit_select_service(&self, id: &ServiceId) {
+        let payload = SelectServicePayload {
+            service_id: id.as_str(),
+        };
         if let Err(err) = self
             .app_handle
-            .emit_to(SHELL_LABEL, SERVICES_CHANGED_EVENT, ())
+            .emit_to(SHELL_LABEL, SELECT_SERVICE_EVENT, &payload)
         {
-            tracing::warn!("failed to emit {SERVICES_CHANGED_EVENT}: {err}");
+            tracing::warn!("failed to emit {SELECT_SERVICE_EVENT}: {err}");
         }
     }
 }
 
-/// The error returned when an edit is attempted while this manager is
-/// [`ManagerState::Failed`]: config/state never loaded, so there is
-/// nothing valid to build an edit on top of (design.md §5.1 — this app
-/// never repairs an existing file). Builds a fresh `AppError` from the
-/// kept one's message rather than moving or cloning it out of
-/// `ManagerState` (`AppError` is not `Clone`).
-fn not_ready(startup_error: &AppError) -> AppError {
+/// [`ServiceManager::emit_services_changed`]'s payload: `services`, in
+/// sidebar order, wrapped in an object (rather than emitted as a bare
+/// array) so the shape can grow a sibling field later without becoming a
+/// breaking change.
+#[derive(Serialize)]
+struct ServicesChangedPayload<'a> {
+    services: &'a [ServiceConfig],
+}
+
+/// [`ServiceManager::emit_select_service`]'s payload (design.md §2.2.12:
+/// `{ serviceId }`).
+#[derive(Serialize)]
+struct SelectServicePayload<'a> {
+    #[serde(rename = "serviceId")]
+    service_id: &'a str,
+}
+
+/// A read-only snapshot of this manager's config, for Task 1.9's
+/// `get_snapshot` command (see [`ServiceManager::snapshot`]'s doc comment
+/// for the failed-startup contract).
+pub struct ManagerSnapshot {
+    pub settings: Option<Settings>,
+    pub services: Vec<ServiceConfig>,
+    pub config_error: Option<ConfigError>,
+}
+
+/// The error returned when an edit (or [`ServiceManager::select_service`])
+/// is attempted while this manager is [`ManagerState::Failed`]:
+/// config/state never loaded, so there is nothing valid to build an edit
+/// on top of (design.md §5.1 — this app never repairs an existing file).
+fn not_ready(startup_error: &ConfigError) -> AppError {
     AppError::Config(format!(
         "service manager did not start (config or state failed to load): {startup_error}"
     ))

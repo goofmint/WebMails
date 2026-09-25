@@ -1,4 +1,5 @@
 mod agent;
+mod commands;
 pub mod config;
 pub mod error;
 pub mod host;
@@ -34,6 +35,17 @@ fn current_content_rect(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![
+            commands::get_snapshot,
+            commands::add_service,
+            commands::update_service,
+            commands::remove_service,
+            commands::reorder_services,
+            commands::select_service,
+            commands::update_settings,
+            commands::open_settings,
+            commands::reload_service,
+        ])
         .setup(|app| {
             // `app.windows` is empty in `tauri.conf.json` (design.md §9.2):
             // the main window is built here in code because it needs
@@ -135,10 +147,14 @@ pub fn run() {
 
             // On either failure, no services are started, the file is
             // never repaired or overwritten, and the error is kept on the
-            // manager (logged here at error level) for a later command
-            // (Task 1.9) to surface to the shell.
+            // manager (logged here at error level, and surfaced verbatim
+            // — for the config.toml case — or rebuilt into an equivalent
+            // `ConfigError` — for the state.json case, since
+            // `StateStore::open` returns a plain `AppError` with no
+            // `file`/`key`/`reason` structure of its own — as `commands::
+            // get_snapshot`'s `configError` field, Task 1.9).
             let manager: Arc<ServiceManager> = match config::load_or_init(&config_path) {
-                Ok(loaded_config) => match StateStore::open(state_path) {
+                Ok(loaded_config) => match StateStore::open(state_path.clone()) {
                     Ok(state) => Arc::new(ServiceManager::ready(
                         host.clone(),
                         manager_profile_backend,
@@ -149,12 +165,17 @@ pub fn run() {
                     )),
                     Err(err) => {
                         tracing::error!("failed to open state store: {err}");
+                        let state_error = config::ConfigError {
+                            file: state_path,
+                            key: None,
+                            reason: err.to_string(),
+                        };
                         Arc::new(ServiceManager::failed(
                             host.clone(),
                             manager_profile_backend,
                             app.handle().clone(),
                             config_path,
-                            err,
+                            state_error,
                         ))
                     }
                 },
@@ -165,7 +186,7 @@ pub fn run() {
                         manager_profile_backend,
                         app.handle().clone(),
                         config_path,
-                        err.into(),
+                        err,
                     ))
                 }
             };
