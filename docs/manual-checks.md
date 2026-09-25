@@ -16,8 +16,7 @@ Exit criterion (SPEC §16): two iCloud accounts signed in side by side; a URL be
 
 Exit criterion (SPEC §16): N Gmail accounts plus iCloud show live counts while the window is in the background.
 
-- [ ] N Gmail accounts show live counts while the window is in the background
-- [ ] iCloud shows a live count while the window is in the background
+- [ ] With N Gmail accounts and iCloud configured at the same time, every service shows a live count while the window is in the background
 
 ## M3 — Background survival
 
