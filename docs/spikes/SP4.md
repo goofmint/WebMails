@@ -78,6 +78,14 @@ pnpm build
 ELUMA_SPIKE=sp4 pnpm tauri dev
 ```
 
+Windows PowerShell:
+
+```powershell
+pnpm install
+pnpm build
+$env:ELUMA_SPIKE = "sp4"; pnpm tauri dev
+```
+
 1. **Minimized, 30 minutes.** Start the app, let the page log a few ticks normally, minimize
    the window, wait the full 30 minutes (do not shorten this), then restore and copy the log.
 2. **Offscreen.** Move the window fully off any monitor's visible bounds (not minimized) for a

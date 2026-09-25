@@ -102,6 +102,14 @@ pnpm build
 ELUMA_SPIKE=sp3 pnpm tauri dev
 ```
 
+Windows PowerShell:
+
+```powershell
+pnpm install
+pnpm build
+$env:ELUMA_SPIKE = "sp3"; pnpm tauri dev
+```
+
 This starts a debug build (SP3's windows only exist in debug builds). Rust stdout logs the
 capability that was added and the expected outcome for each of the three children. For each
 window, open DevTools and run, in the console:

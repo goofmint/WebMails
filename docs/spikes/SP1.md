@@ -14,17 +14,17 @@ it: `MultiwebviewHost` (one `Window`, service webviews added as children via
 
 ## Environment (owner fills in per run)
 
-| Field                              | macOS                                                 | Windows                                                          |
-| ---------------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------- |
-| OS build                           | _(e.g. macOS 14.x, build xxXXX — fill in)_            | _(e.g. Windows 11 23H2, build xxxxx — fill in)_                  |
-| CPU                                | _(e.g. Apple M-series — fill in)_                     | _(fill in)_                                                      |
-| Display scale factor               | _(e.g. 2.0 — fill in)_                                | _(e.g. 1.0 / 1.25 / 1.5 — fill in)_                              |
-| `tauri` version (Cargo.lock)       | 2.11.6                                                | 2.11.6                                                           |
-| `wry` version (Cargo.lock)         | 0.55.1                                                | 0.55.1                                                           |
-| `tao` version (Cargo.lock)         | 0.35.3                                                | 0.35.3                                                           |
-| `tauri-utils` version (Cargo.lock) | 2.9.3                                                 | 2.9.3                                                            |
-| WebView2 Runtime version           | n/a                                                   | _(fill in, `winver` of `msedgewebview2.exe` or Settings → Apps)_ |
-| Branch / commit                    | `spike/m0-harness` @ _(fill in `git rev-parse HEAD`)_ | same                                                             |
+| Field                              | macOS                                                 | Windows                                                                                                                                                                 |
+| ---------------------------------- | ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OS build                           | _(e.g. macOS 14.x, build xxXXX — fill in)_            | _(e.g. Windows 11 23H2, build xxxxx — fill in)_                                                                                                                         |
+| CPU                                | _(e.g. Apple M-series — fill in)_                     | _(fill in)_                                                                                                                                                             |
+| Display scale factor               | _(e.g. 2.0 — fill in)_                                | _(e.g. 1.0 / 1.25 / 1.5 — fill in)_                                                                                                                                     |
+| `tauri` version (Cargo.lock)       | 2.11.6                                                | 2.11.6                                                                                                                                                                  |
+| `wry` version (Cargo.lock)         | 0.55.1                                                | 0.55.1                                                                                                                                                                  |
+| `tao` version (Cargo.lock)         | 0.35.3                                                | 0.35.3                                                                                                                                                                  |
+| `tauri-utils` version (Cargo.lock) | 2.9.3                                                 | 2.9.3                                                                                                                                                                   |
+| WebView2 Runtime version           | n/a                                                   | _(fill in — check `msedgewebview2.exe` itself: its file Properties → Details, `(Get-Item "<path>\msedgewebview2.exe").VersionInfo.ProductVersion`, or Settings → Apps)_ |
+| Branch / commit                    | `spike/m0-harness` @ _(fill in `git rev-parse HEAD`)_ | same                                                                                                                                                                    |
 
 ## Implementation summary
 
@@ -52,6 +52,14 @@ On each target OS, from a checkout of `spike/m0-harness`:
 pnpm install
 pnpm build
 ELUMA_SPIKE=sp1 pnpm tauri dev
+```
+
+Windows PowerShell:
+
+```powershell
+pnpm install
+pnpm build
+$env:ELUMA_SPIKE = "sp1"; pnpm tauri dev
 ```
 
 Run scenarios S1–S8 below. Record OS build, CPU, and display scale before starting (table

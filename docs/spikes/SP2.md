@@ -55,9 +55,19 @@ pnpm build
 ELUMA_SPIKE=sp2 pnpm tauri dev
 ```
 
-Before the first sign-in run, delete any pre-existing data for both slots (Windows:
-`webviews/<uuid>` directory printed at startup; macOS: the corresponding WebKit data store —
-see "Constraints" below if it cannot be located). Then:
+Windows PowerShell:
+
+```powershell
+pnpm install
+pnpm build
+$env:ELUMA_SPIKE = "sp2"; pnpm tauri dev
+```
+
+Before the first sign-in run, delete any pre-existing data for both slots (Windows: the
+`{app_data_dir}/webview/<uuid>` directory printed at startup for each slot; macOS: the
+corresponding WebKit data store — see "Constraints" below). If the data store cannot be
+located or deleted on macOS, stop here and record the result as **Unconfirmed**; do not
+proceed to the sign-in steps below with a pre-existing store still in place. Then:
 
 1. Sign in to account A on the left child, account B on the right child, completing 2FA and
    choosing "trust this browser" for each. Reload both and confirm each shows the correct,
@@ -87,6 +97,11 @@ result you did not actually observe.
 ## Constraints
 
 - macOS 14+ only; Linux and Android are out of scope for this spike and for Eluma generally.
+- WKWebView owns the on-disk location of a `data_store_identifier` store; it is not directly
+  inspectable from application code. If the owner cannot locate or delete the pre-existing
+  store for a slot before the first sign-in run, stop and record the result as **Unconfirmed**
+  rather than continuing the sign-in steps with an existing store still in place — a stale
+  store would invalidate the "no re-authentication needed" check in step 2.
 - The window created by this harness mode does not handle resizing (per the SP2 task scope);
   only SP1's mode exercises resize/relayout.
 - A force-quit is a risk to flag for later design, not a pass/fail gate for this spike's
