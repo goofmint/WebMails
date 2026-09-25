@@ -262,6 +262,15 @@ impl<B: ProfileBackend + Send + Sync> WebviewHost for ChildWindowHost<B> {
 
         let window = builder.build().map_err(AppError::from)?;
 
+        // The builder's position/size are logical pixels; `offscreen` is
+        // physical, so apply it explicitly before registering the window.
+        if let Err(err) = apply_frame(&window, offscreen) {
+            if let Err(close_err) = window.close() {
+                tracing::error!("closing unplaceable service window failed: {close_err}");
+            }
+            return Err(err);
+        }
+
         registry.windows.insert(spec.id, window);
         Ok(())
     }
