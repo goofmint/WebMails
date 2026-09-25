@@ -64,6 +64,7 @@ pub fn save_atomic(path: &Path, state: &State) -> AppResult<()> {
         return Err(err.into());
     }
     fs::rename(&tmp_path, path)?;
+    sync_parent_dir(parent)?;
     Ok(())
 }
 
@@ -71,6 +72,21 @@ fn write_and_sync(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut file = fs::File::create(path)?;
     file.write_all(bytes)?;
     file.sync_all()
+}
+
+/// Fsyncs `parent` itself after the rename, so the directory entry change
+/// (the new name pointing at the renamed file) is durable too, not just the
+/// file's own contents. Only meaningful on Unix, where a directory can be
+/// opened and synced like a file; Windows has no equivalent and does not
+/// need it (`fs::rename` there is already a durable metadata operation).
+#[cfg(unix)]
+fn sync_parent_dir(parent: &Path) -> io::Result<()> {
+    fs::File::open(parent)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_parent_dir(_parent: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 fn tmp_path_for(path: &Path) -> AppResult<PathBuf> {
@@ -96,6 +112,12 @@ struct Shared {
     state: Mutex<State>,
     flags: Mutex<WorkerFlags>,
     condvar: Condvar,
+    /// Serializes the "clear dirty, snapshot state, save_atomic" sequence
+    /// between [`StateStore::flush`] and the background worker, so the two
+    /// never interleave (e.g. both racing to save at once, or one clearing
+    /// `dirty` out from under the other's in-flight save). Always acquired
+    /// before `flags`.
+    save_lock: Mutex<()>,
 }
 
 fn poison_err() -> AppError {
@@ -134,6 +156,7 @@ impl StateStore {
                 shutdown: false,
             }),
             condvar: Condvar::new(),
+            save_lock: Mutex::new(()),
         });
 
         let worker_shared = Arc::clone(&shared);
@@ -169,6 +192,10 @@ impl StateStore {
 
     /// Saves synchronously if the store is dirty; a no-op otherwise.
     pub fn flush(&self) -> AppResult<()> {
+        // Held across clearing `dirty`, snapshotting and saving, so this
+        // never interleaves with the background worker doing the same
+        // (see `Shared::save_lock`). Acquired before `flags`.
+        let _save_guard = self.inner.save_lock.lock().map_err(|_| poison_err())?;
         {
             let mut flags = self.inner.flags.lock().map_err(|_| poison_err())?;
             if !flags.dirty {
@@ -223,15 +250,19 @@ impl Drop for StateStore {
 }
 
 /// Waits for a dirty (non-shutdown) state, debounces against `interval`
-/// since the last save, snapshots and saves, then loops. Exits once
-/// shutdown is requested and there is no pending dirty change to save.
+/// since the last save, snapshots and saves, then loops.
+///
+/// Exits as soon as shutdown is requested, even if a change is still
+/// pending (dirty): a shutdown always wins the race with a save, so
+/// `StateStore::drop` can join this thread promptly and do the final flush
+/// itself, rather than this loop trying to sneak one more save in first.
 fn run_worker(shared: Arc<Shared>, interval: Duration) {
     let mut last_saved: Option<Instant> = None;
 
     loop {
         let mut flags = lock_flags(&shared);
         loop {
-            if flags.shutdown && !flags.dirty {
+            if flags.shutdown {
                 return;
             }
             if flags.dirty {
@@ -244,22 +275,47 @@ fn run_worker(shared: Arc<Shared>, interval: Duration) {
         }
 
         if let Some(last) = last_saved {
-            let elapsed = last.elapsed();
-            if elapsed < interval {
+            // Wait out the rest of the debounce interval. `wait_timeout`
+            // can wake early on any `condvar.notify_all()` — including an
+            // ordinary `update()` — not just a timeout or shutdown, so loop
+            // and recompute the remaining wait rather than treating any
+            // early wake as "the interval elapsed". Only a timeout or a
+            // shutdown request ends the wait early; plain dirty-notifies do
+            // not.
+            loop {
+                let elapsed = last.elapsed();
+                if elapsed >= interval {
+                    break;
+                }
                 let remaining = interval - elapsed;
-                let (g, _timeout) = match shared.condvar.wait_timeout(flags, remaining) {
+                let (g, timeout) = match shared.condvar.wait_timeout(flags, remaining) {
                     Ok(v) => v,
                     Err(poisoned) => poisoned.into_inner(),
                 };
                 flags = g;
-                if !flags.dirty {
-                    // Woken early (e.g. shutdown) with nothing new to save;
-                    // re-check the loop conditions from the top.
-                    continue;
+                if flags.shutdown {
+                    return;
+                }
+                if timeout.timed_out() {
+                    break;
                 }
             }
         }
+        drop(flags);
 
+        // Held across clearing `dirty`, snapshotting and saving, so this
+        // never interleaves with `StateStore::flush` doing the same (see
+        // `Shared::save_lock`). Acquired before `flags`.
+        let save_guard = lock_save(&shared);
+
+        let mut flags = lock_flags(&shared);
+        if !flags.dirty {
+            // `flush()` already saved this change while we were waiting for
+            // `save_lock`; nothing left to do this round.
+            drop(flags);
+            drop(save_guard);
+            continue;
+        }
         flags.dirty = false;
         drop(flags);
 
@@ -281,13 +337,27 @@ fn run_worker(shared: Arc<Shared>, interval: Duration) {
                 );
                 let mut flags = lock_flags(&shared);
                 flags.dirty = true;
+                drop(flags);
+                // Count this failed attempt as a "save" for debounce
+                // purposes too, so a persistently failing save (e.g. disk
+                // full) retries at most once per `interval` instead of
+                // spinning.
+                last_saved = Some(Instant::now());
             }
         }
+        drop(save_guard);
     }
 }
 
 fn lock_flags(shared: &Shared) -> std::sync::MutexGuard<'_, WorkerFlags> {
     match shared.flags.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn lock_save(shared: &Shared) -> std::sync::MutexGuard<'_, ()> {
+    match shared.save_lock.lock() {
         Ok(g) => g,
         Err(poisoned) => poisoned.into_inner(),
     }
@@ -500,6 +570,52 @@ mod tests {
     }
 
     #[test]
+    fn drop_while_dirty_completes_promptly() {
+        // The worker must exit as soon as shutdown is requested, even with
+        // a pending dirty change, so Drop doesn't block waiting for the
+        // worker to finish an in-progress debounce wait/save first; it does
+        // the final flush itself instead. With a long debounce interval,
+        // a `Drop` that still waited on the worker would take (close to)
+        // the whole interval; one that hands off to its own synchronous
+        // flush completes almost immediately.
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let long_interval = Duration::from_secs(60);
+
+        let store = StateStore::open_with_interval(path.clone(), long_interval).expect("open");
+        store
+            .update(|s| {
+                s.staleness.insert(
+                    ServiceId::new("svc-1").expect("valid id"),
+                    super::super::model::StalenessStats {
+                        count: 1,
+                        last_at: None,
+                    },
+                );
+            })
+            .expect("update");
+
+        let start = Instant::now();
+        drop(store);
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "drop took {elapsed:?}, expected it to complete promptly rather than \
+             waiting out the {long_interval:?} debounce interval"
+        );
+
+        let on_disk = load(&path).expect("load");
+        assert_eq!(
+            on_disk
+                .staleness
+                .get(&ServiceId::new("svc-1").expect("valid id"))
+                .map(|s| s.count),
+            Some(1)
+        );
+    }
+
+    #[test]
     fn open_corrupt_syntax_is_state_error_and_leaves_file_unchanged() {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("state.json");
@@ -564,5 +680,65 @@ mod tests {
                 .get(&ProfileName::new("default").expect("valid profile")),
             Some(&Uuid::parse_str("00000000-0000-0000-0000-000000000003").unwrap())
         );
+    }
+
+    #[test]
+    fn rapid_updates_within_interval_do_not_shorten_debounce() {
+        // Each `update()` notifies the worker's condvar. If that early wake
+        // were mistaken for "the debounce interval elapsed" (as it used to
+        // be), a burst of updates would cause a save well before `interval`
+        // has actually passed since the worker's last save. Use generous
+        // margins throughout so this isn't sensitive to exact scheduling.
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let interval = Duration::from_millis(300);
+        let store = StateStore::open_with_interval(path.clone(), interval).expect("open");
+
+        let first = ProfileName::new("first").expect("valid profile");
+        let second = ProfileName::new("second").expect("valid profile");
+
+        // The very first save has no prior save to debounce against, so it
+        // lands promptly. Wait for it, so the worker's internal
+        // `last_saved` is set before the part of this test that matters.
+        store
+            .update(|s| {
+                s.profiles.insert(first.clone(), Uuid::nil());
+            })
+            .expect("update");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if load(&path).expect("load").profiles.contains_key(&first) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "initial (non-debounced) save did not land in time"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        // Fire off a burst of updates, each notifying the worker while it
+        // should be sitting in its post-save debounce wait.
+        for _ in 0..5 {
+            thread::sleep(Duration::from_millis(10));
+            store
+                .update(|s| {
+                    s.profiles.insert(second.clone(), Uuid::nil());
+                })
+                .expect("update");
+        }
+
+        // Well before `interval` has elapsed since the worker's last save,
+        // the second save must not have landed yet.
+        thread::sleep(Duration::from_millis(100));
+        assert!(
+            !load(&path).expect("load").profiles.contains_key(&second),
+            "background worker saved before the debounce interval elapsed"
+        );
+
+        // Well after the interval has elapsed, the second save must have
+        // landed.
+        thread::sleep(interval);
+        assert!(load(&path).expect("load").profiles.contains_key(&second));
     }
 }

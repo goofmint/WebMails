@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use uuid::Uuid;
 
 /// Maximum number of seen message ids retained per service, in [`SeenRing`]
@@ -47,9 +47,32 @@ impl State {
 ///
 /// This task defines only the storage type; insertion and eviction belong to
 /// task 4.4's `notify::seen` module.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Serialization is transparent (just the inner array), but deserialization
+/// rejects a `state.json` whose ring already holds more than
+/// [`SEEN_RING_CAPACITY`] entries: that is corrupt data, not something to
+/// silently truncate (no fallback defaults — see project rules), so it
+/// surfaces as a serde error and `state::load` reports it as
+/// `AppError::State`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct SeenRing(pub VecDeque<String>);
+
+impl<'de> Deserialize<'de> for SeenRing {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let inner = VecDeque::<String>::deserialize(deserializer)?;
+        if inner.len() > SEEN_RING_CAPACITY {
+            return Err(serde::de::Error::custom(format!(
+                "seen ring has {} entries, exceeding capacity of {SEEN_RING_CAPACITY}",
+                inner.len()
+            )));
+        }
+        Ok(SeenRing(inner))
+    }
+}
 
 /// Liveness/staleness bookkeeping for one service (design.md §9.4, task
 /// 3.2).
@@ -83,6 +106,24 @@ mod tests {
 
         let back: SeenRing = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, ring);
+    }
+
+    #[test]
+    fn seen_ring_at_capacity_deserializes_ok() {
+        let ids: Vec<String> = (0..SEEN_RING_CAPACITY).map(|i| i.to_string()).collect();
+        let json = serde_json::to_string(&ids).expect("serialize");
+
+        let ring: SeenRing = serde_json::from_str(&json).expect("deserialize at capacity");
+        assert_eq!(ring.0.len(), SEEN_RING_CAPACITY);
+    }
+
+    #[test]
+    fn seen_ring_over_capacity_is_deserialization_error() {
+        let ids: Vec<String> = (0..=SEEN_RING_CAPACITY).map(|i| i.to_string()).collect();
+        let json = serde_json::to_string(&ids).expect("serialize");
+
+        let err = serde_json::from_str::<SeenRing>(&json).expect_err("should fail");
+        assert!(err.to_string().contains("exceeding capacity"));
     }
 
     #[test]
