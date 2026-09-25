@@ -48,19 +48,25 @@ pub fn load(path: &Path) -> AppResult<State> {
 /// directory, `sync_all` is called on it, and it is then renamed onto
 /// `path`. A serialization failure is `AppError::State`; any I/O failure is
 /// `AppError::Io`.
-pub fn save_atomic(path: &Path, state: &State) -> AppResult<()> {
-    if let Some((id, ring)) = state
+/// Rejects any seen ring longer than [`SEEN_RING_CAPACITY`].
+fn check_seen_capacity(path: &Path, state: &State) -> AppResult<()> {
+    match state
         .seen
         .iter()
         .find(|(_, ring)| ring.0.len() > SEEN_RING_CAPACITY)
     {
-        return Err(AppError::State(format!(
+        Some((id, ring)) => Err(AppError::State(format!(
             "{}: seen ring for `{}` has {} ids, over the capacity of {SEEN_RING_CAPACITY}",
             path.display(),
             id.as_str(),
             ring.0.len()
-        )));
+        ))),
+        None => Ok(()),
     }
+}
+
+pub fn save_atomic(path: &Path, state: &State) -> AppResult<()> {
+    check_seen_capacity(path, state)?;
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -192,7 +198,13 @@ impl StateStore {
     pub fn update<T>(&self, f: impl FnOnce(&mut State) -> T) -> AppResult<T> {
         let result = {
             let mut guard = self.inner.state.lock().map_err(|_| poison_err())?;
-            f(&mut guard)
+            let before = guard.clone();
+            let result = f(&mut guard);
+            if let Err(err) = check_seen_capacity(&self.inner.path, &guard) {
+                *guard = before;
+                return Err(err);
+            }
+            result
         };
         {
             let mut flags = self.inner.flags.lock().map_err(|_| poison_err())?;
@@ -596,6 +608,33 @@ mod tests {
                 .get(&ServiceId::new("svc-1").expect("valid id"))
                 .map(|s| s.count),
             Some(3)
+        );
+    }
+
+    #[test]
+    fn update_that_overfills_a_seen_ring_is_rolled_back() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let store =
+            StateStore::open_with_interval(path.clone(), Duration::from_secs(60)).expect("open");
+        let id = ServiceId::new("svc-1").expect("valid id");
+
+        let err = store
+            .update(|state| {
+                state.seen.insert(
+                    id.clone(),
+                    crate::state::model::SeenRing(
+                        (0..=SEEN_RING_CAPACITY).map(|n| n.to_string()).collect(),
+                    ),
+                );
+            })
+            .expect_err("over-capacity update must be rejected");
+        assert_eq!(err.kind(), "state");
+        assert!(store.read(|state| state.seen.is_empty()).expect("read"));
+        store.flush().expect("flush");
+        assert!(
+            !path.exists(),
+            "a rejected update must not mark the store dirty"
         );
     }
 
