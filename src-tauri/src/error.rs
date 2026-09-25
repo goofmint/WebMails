@@ -28,6 +28,11 @@ pub enum AppError {
     /// Application state (`state.json`) could not be loaded or is invalid.
     #[error("state error: {0}")]
     State(String),
+
+    /// A profile's webview data store (macOS) or data directory (Windows)
+    /// could not be applied or removed (design.md §2.2.3).
+    #[error("profile error: {0}")]
+    Profile(String),
 }
 
 impl AppError {
@@ -41,6 +46,7 @@ impl AppError {
             AppError::Io(_) => "io",
             AppError::Config(_) => "config",
             AppError::State(_) => "state",
+            AppError::Profile(_) => "profile",
         }
     }
 }
@@ -92,6 +98,17 @@ mod tests {
         assert_eq!(
             value,
             json!({ "kind": "state", "message": err.to_string() })
+        );
+    }
+
+    #[test]
+    fn profile_error_serializes_kind_and_message() {
+        let err = AppError::Profile("remove_data_store failed".to_string());
+        let value = serde_json::to_value(&err).expect("serialize");
+        assert_eq!(err.kind(), "profile");
+        assert_eq!(
+            value,
+            json!({ "kind": "profile", "message": err.to_string() })
         );
     }
 

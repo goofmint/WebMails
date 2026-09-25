@@ -393,14 +393,15 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    use crate::config::{ProfileName, ServiceId};
+    use crate::config::ServiceId;
+    use crate::state::ProfileKey;
     use tempfile::tempdir;
     use uuid::Uuid;
 
     fn sample_state() -> State {
         let mut profiles = BTreeMap::new();
         profiles.insert(
-            ProfileName::new("default").expect("valid profile"),
+            ProfileKey::Default,
             Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
         );
         State {
@@ -519,6 +520,34 @@ mod tests {
     }
 
     #[test]
+    fn load_invalid_profile_key_is_state_error_and_leaves_file_unchanged() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let original =
+            br#"{"profiles":{"not a key":"00000000-0000-0000-0000-000000000001"},"seen":{},"staleness":{}}"#
+                .to_vec();
+        fs::write(&path, &original).expect("write");
+
+        let err = load(&path).expect_err("should fail");
+        assert_eq!(err.kind(), "state");
+        assert_eq!(fs::read(&path).expect("read"), original);
+    }
+
+    #[test]
+    fn load_reserved_named_profile_key_is_state_error_and_leaves_file_unchanged() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let original =
+            br#"{"profiles":{"named:isolated":"00000000-0000-0000-0000-000000000001"},"seen":{},"staleness":{}}"#
+                .to_vec();
+        fs::write(&path, &original).expect("write");
+
+        let err = load(&path).expect_err("should fail");
+        assert_eq!(err.kind(), "state");
+        assert_eq!(fs::read(&path).expect("read"), original);
+    }
+
+    #[test]
     fn save_rejects_an_over_capacity_seen_ring_and_writes_nothing() {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("state.json");
@@ -560,7 +589,7 @@ mod tests {
         store
             .update(|s| {
                 s.profiles.insert(
-                    ProfileName::new("default").expect("valid profile"),
+                    ProfileKey::Default,
                     Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap(),
                 );
             })
@@ -571,9 +600,7 @@ mod tests {
         let in_memory = store.read(|s| s.clone()).expect("read");
         assert_eq!(on_disk, in_memory);
         assert_eq!(
-            on_disk
-                .profiles
-                .get(&ProfileName::new("default").expect("valid profile")),
+            on_disk.profiles.get(&ProfileKey::Default),
             Some(&Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap())
         );
     }
@@ -732,7 +759,7 @@ mod tests {
         store
             .update(|s| {
                 s.profiles.insert(
-                    ProfileName::new("default").expect("valid profile"),
+                    ProfileKey::Default,
                     Uuid::parse_str("00000000-0000-0000-0000-000000000003").unwrap(),
                 );
             })
@@ -744,9 +771,7 @@ mod tests {
 
         let on_disk = load(&path).expect("load");
         assert_eq!(
-            on_disk
-                .profiles
-                .get(&ProfileName::new("default").expect("valid profile")),
+            on_disk.profiles.get(&ProfileKey::Default),
             Some(&Uuid::parse_str("00000000-0000-0000-0000-000000000003").unwrap())
         );
     }
@@ -763,8 +788,8 @@ mod tests {
         let interval = Duration::from_millis(300);
         let store = StateStore::open_with_interval(path.clone(), interval).expect("open");
 
-        let first = ProfileName::new("first").expect("valid profile");
-        let second = ProfileName::new("second").expect("valid profile");
+        let first = ProfileKey::Isolated(ServiceId::new("first").expect("valid id"));
+        let second = ProfileKey::Isolated(ServiceId::new("second").expect("valid id"));
 
         // The very first save has no prior save to debounce against, so it
         // lands promptly. Wait for it, so the worker's internal

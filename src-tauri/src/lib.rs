@@ -2,6 +2,7 @@ mod agent;
 pub mod config;
 pub mod error;
 pub mod paths;
+pub mod profile;
 pub mod state;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

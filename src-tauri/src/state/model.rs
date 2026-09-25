@@ -12,6 +12,7 @@ use uuid::Uuid;
 pub const SEEN_RING_CAPACITY: usize = 500;
 
 pub use crate::config::{ProfileName, ServiceId};
+pub use crate::profile::ProfileKey;
 
 /// Persisted application state (`state.json`).
 ///
@@ -23,7 +24,7 @@ pub use crate::config::{ProfileName, ServiceId};
 /// than erroring when the file does not exist yet (design.md §2.2.2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct State {
-    pub profiles: BTreeMap<ProfileName, Uuid>,
+    pub profiles: BTreeMap<ProfileKey, Uuid>,
     pub seen: BTreeMap<ServiceId, SeenRing>,
     pub staleness: BTreeMap<ServiceId, StalenessStats>,
 }
