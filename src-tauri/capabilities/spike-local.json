@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "spike-local",
+  "description": "Commands the spike harness's own local (bundled) pages may call. `switch_service` is restricted to the shell webview only, matching design §2.2.6's pattern of scoping app commands to one webview label. `spike_log` is also granted to the sp4 test page so it can forward its in-page log to Rust. Remote service pages (svc-*, isolated-*) are never listed here; SP3's `report_unread` capability is added separately, at runtime, only to the specific label(s) under test.",
+  "windows": ["main"],
+  "webviews": ["shell", "sp4-page"],
+  "permissions": ["allow-switch-service", "allow-spike-log"]
+}

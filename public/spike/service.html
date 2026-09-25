@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Eluma spike — service</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: #111;
+      }
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+      }
+      #big {
+        font-size: 22vh;
+        font-weight: 700;
+        line-height: 1;
+      }
+      #stats {
+        font-size: 14px;
+        text-align: center;
+        background: rgba(255, 255, 255, 0.75);
+        border-radius: 8px;
+        padding: 8px 16px;
+      }
+      .marker {
+        position: fixed;
+        width: 18px;
+        height: 18px;
+        background: rgba(0, 0, 0, 0.65);
+      }
+      #m-tl {
+        top: 0;
+        left: 0;
+      }
+      #m-tr {
+        top: 0;
+        right: 0;
+      }
+      #m-bl {
+        bottom: 0;
+        left: 0;
+      }
+      #m-br {
+        bottom: 0;
+        right: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="big">?</div>
+    <div id="stats"></div>
+    <div class="marker" id="m-tl"></div>
+    <div class="marker" id="m-tr"></div>
+    <div class="marker" id="m-bl"></div>
+    <div class="marker" id="m-br"></div>
+    <script>
+      // SP1 local test service page: shows which slot it is, live geometry,
+      // a free-running counter, and corner markers so offscreen placement
+      // and z-order can be checked visually.
+      var palette = ["#ffb703", "#8ecae6", "#95d5b2", "#ffafcc", "#cdb4db"];
+
+      function info() {
+        return window.__ELUMA_SPIKE_SERVICE__ || { index: 0, label: "?" };
+      }
+
+      function paint() {
+        var svc = info();
+        document.body.style.background = palette[svc.index % palette.length];
+        document.getElementById("big").textContent = String(svc.index);
+      }
+
+      function updateStats() {
+        document.getElementById("stats").textContent =
+          "label=" +
+          info().label +
+          "  innerWidth=" +
+          window.innerWidth +
+          "  innerHeight=" +
+          window.innerHeight +
+          "  dpr=" +
+          window.devicePixelRatio;
+      }
+
+      window.addEventListener("resize", updateStats);
+      paint();
+      updateStats();
+
+      var counter = 0;
+      setInterval(function () {
+        counter += 1;
+        var big = document.getElementById("big");
+        big.textContent = info().index + " (" + counter + "s)";
+      }, 1000);
+    </script>
+  </body>
+</html>

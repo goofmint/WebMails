@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>eluma-sp4-0</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        background: #0e0f12;
+        color: #d7d7d7;
+      }
+      body {
+        padding: 10px;
+      }
+      h1 {
+        font-size: 14px;
+        margin: 0 0 8px;
+      }
+      #summary {
+        display: flex;
+        gap: 16px;
+        flex-wrap: wrap;
+        margin-bottom: 8px;
+        padding: 8px;
+        background: #1a1c22;
+        border-radius: 6px;
+      }
+      #summary div {
+        min-width: 140px;
+      }
+      .actions button {
+        margin-right: 6px;
+        margin-bottom: 8px;
+      }
+      #log {
+        white-space: pre-wrap;
+        word-break: break-all;
+        max-height: 70vh;
+        overflow: auto;
+        background: #000;
+        padding: 8px;
+        border-radius: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>SP4 — WebView2 throttling probe</h1>
+    <div class="actions">
+      <button id="copy">Copy log</button>
+      <button id="reset">Reset this case</button>
+    </div>
+    <div id="summary"></div>
+    <div id="log"></div>
+    <script>
+      // SP4 test page (design §6.3 / SPEC §17 Q1). Runs two independent
+      // 5s timers (one plain log tick, one title mutation) plus a
+      // MutationObserver on <title> and a visibilitychange listener.
+      // Every event is timestamped with Date.now() and performance.now()
+      // plus the delta from the previous event of the same kind, and the
+      // current document.visibilityState, so a stalled or throttled
+      // timer shows up as a widening delta or a gap in the log.
+      //
+      // Logs are kept in memory, mirrored to localStorage (per case, so a
+      // reload/reset does not lose the previous case's data until the
+      // owner explicitly resets it), and printed to console. They are
+      // also best-effort forwarded to the Rust side via the `spike_log`
+      // command so they land in stderr and the app-data log file even if
+      // the webview is minimized/offscreen/occluded and the owner cannot
+      // look at the DevTools console.
+      var STORAGE_KEY = "eluma-spike-sp4-log";
+      var lastByKind = {};
+      var logs = [];
+
+      function loadStored() {
+        try {
+          var raw = localStorage.getItem(STORAGE_KEY);
+          return raw ? JSON.parse(raw) : [];
+        } catch (err) {
+          return [];
+        }
+      }
+
+      function persist() {
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(logs));
+        } catch (err) {
+          // localStorage can be unavailable (e.g. private mode); the
+          // in-memory log and the Rust-side log file are still valid.
+        }
+      }
+
+      function record(kind, extra) {
+        var now = Date.now();
+        var perf = performance.now();
+        var prev = lastByKind[kind];
+        var deltaMs = prev === undefined ? null : now - prev.now;
+        lastByKind[kind] = { now: now, perf: perf };
+        var entry = {
+          kind: kind,
+          now: now,
+          perf: Math.round(perf),
+          deltaMs: deltaMs,
+          visibilityState: document.visibilityState,
+          extra: extra || null,
+        };
+        logs.push(entry);
+        persist();
+        var line = JSON.stringify(entry);
+        console.log("[sp4]", line);
+        renderLog();
+        try {
+          window.__TAURI_INTERNALS__
+            .invoke("spike_log", {
+              line: line,
+            })
+            .catch(function () {
+              /* best effort only; DevTools console + localStorage remain */
+            });
+        } catch (err) {
+          /* invoke bridge not present (e.g. plain browser preview) */
+        }
+      }
+
+      function renderLog() {
+        var el = document.getElementById("log");
+        el.textContent = logs
+          .slice(-200)
+          .map(function (e) {
+            return JSON.stringify(e);
+          })
+          .join("\n");
+        renderSummary();
+      }
+
+      function renderSummary() {
+        var counts = {};
+        var maxDelta = {};
+        var over5s = {};
+        logs.forEach(function (e) {
+          counts[e.kind] = (counts[e.kind] || 0) + 1;
+          if (typeof e.deltaMs === "number") {
+            maxDelta[e.kind] = Math.max(maxDelta[e.kind] || 0, e.deltaMs);
+            if (e.deltaMs > 5000) {
+              over5s[e.kind] = (over5s[e.kind] || 0) + 1;
+            }
+          }
+        });
+        var el = document.getElementById("summary");
+        el.innerHTML = "";
+        Object.keys(counts).forEach(function (kind) {
+          var div = document.createElement("div");
+          div.textContent =
+            kind +
+            ": count=" +
+            counts[kind] +
+            " maxDeltaMs=" +
+            (maxDelta[kind] || 0) +
+            " over5s=" +
+            (over5s[kind] || 0);
+          el.appendChild(div);
+        });
+      }
+
+      // 1) plain 5s heartbeat timer.
+      setInterval(function () {
+        record("timer-5s");
+      }, 5000);
+
+      // 2) a *different* 5s timer that mutates <title>, observed by (3).
+      var titleTick = 0;
+      var titleEl = document.querySelector("title");
+      setInterval(function () {
+        titleTick += 1;
+        document.title = "eluma-sp4-" + titleTick;
+      }, 5000);
+
+      // 3) MutationObserver watching the title mutation from (2). This is
+      // the mechanism design §2.2.4 / tauri `on_document_title_changed`
+      // would also observe from the Rust side; here it is done in-page so
+      // the result does not depend on that API being wired up.
+      new MutationObserver(function () {
+        record("title-mutation-observed", { title: document.title });
+      }).observe(titleEl, { childList: true, characterData: true, subtree: true });
+
+      document.addEventListener("visibilitychange", function () {
+        record("visibilitychange");
+      });
+
+      record("page-loaded");
+
+      document.getElementById("copy").addEventListener("click", function () {
+        var text = logs.map(JSON.stringify).join("\n");
+        navigator.clipboard.writeText(text).catch(function () {
+          window.prompt("Copy manually:", text);
+        });
+      });
+
+      document.getElementById("reset").addEventListener("click", function () {
+        logs = [];
+        lastByKind = {};
+        persist();
+        renderLog();
+      });
+
+      // Restore anything logged before a reload within the same case.
+      logs = loadStored();
+      renderLog();
+    </script>
+  </body>
+</html>

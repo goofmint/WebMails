@@ -19,6 +19,7 @@ tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
 tauri = { version = "~2.11.1", features = ["unstable"] }
+uuid = { version = "1", features = ["v5"] }
 
 [lints]
 workspace = true
