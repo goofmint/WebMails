@@ -26,7 +26,7 @@ toml = "1.1.6"
 toml_edit = "0.25"
 tracing = "0.1.44"
 url = { version = "2.5.8", features = ["serde"] }
-uuid = { version = "1.26.1", features = ["serde"] }
+uuid = { version = "1.26.1", features = ["serde", "v5"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
