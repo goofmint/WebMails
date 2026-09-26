@@ -27,5 +27,13 @@
 
     "types": ["vite/client"]
   },
-  "include": ["src"]
+  // `agent/recipes` is included (not just `src`) because the settings
+  // screen (Task 1.12) imports `matchRecipe`/recipe types directly from it
+  // (design.md §1.3, §2.2.13) — the shell and the agent bundle share this
+  // module's source, built separately by each of `tsconfig.app.json`
+  // (this file, via `vite build`) and `tsconfig.agent.json` (via
+  // `vite.agent.config.ts`). `agent/recipes/registry.test.ts` is excluded:
+  // it is a Vitest test, not part of either shipped bundle.
+  "include": ["src", "agent/recipes"],
+  "exclude": ["agent/recipes/**/*.test.ts"]
 }

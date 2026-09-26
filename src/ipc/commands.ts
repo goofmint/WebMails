@@ -1,10 +1,10 @@
 /**
- * Typed wrappers over the `shell`-webview-facing subset of
- * src-tauri/src/commands/mod.rs's `COMMAND_NAMES` that this task's UI
- * needs (design.md §2.2.12): `get_snapshot`, `select_service`,
- * `reorder_services`, `open_settings`. The remaining commands
- * (`add_service`, `update_service`, `remove_service`, `update_settings`)
- * belong to the settings window, Task 1.12/1.13.
+ * Typed wrappers over the `shell`/`settings`-webview-facing subset of
+ * src-tauri/src/commands/mod.rs's `COMMAND_NAMES` these two windows need
+ * (design.md §2.2.12): `get_snapshot`, `select_service`,
+ * `reorder_services`, `open_settings` (Task 1.10), and `add_service`,
+ * `update_service`, `remove_service` (Task 1.12, for the settings
+ * window's CRUD forms). `update_settings` still belongs to Task 1.13.
  *
  * Every call sites `invoke`'s generic parameter to the exact response type
  * instead of trusting an inferred `any`, per the project's "never `any`"
@@ -12,7 +12,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import type { Snapshot } from "./types";
+import type { ServiceConfig, ServicePatchInput, Snapshot } from "./types";
 
 /** `get_snapshot` — no input, `Snapshot` output (design.md §2.2.12). */
 export async function getSnapshot(): Promise<Snapshot> {
@@ -42,4 +42,41 @@ export async function reorderServices(ids: readonly string[]): Promise<void> {
  */
 export async function openSettings(): Promise<void> {
   await invoke<void>("open_settings");
+}
+
+/**
+ * `add_service` — input `{ name, url, profile }`, output the new
+ * `ServiceConfig` (design.md §2.2.12, §2.2.13's add form; Task 1.12). No
+ * `rename_all` on the Rust command, so every argument key matches its
+ * Rust parameter name verbatim.
+ */
+export async function addService(
+  name: string,
+  url: string,
+  profile: string,
+): Promise<ServiceConfig> {
+  return invoke<ServiceConfig>("add_service", { name, url, profile });
+}
+
+/**
+ * `update_service` — input `{ id, patch }`, output the updated
+ * `ServiceConfig` (Task 1.12). Only the fields actually being changed
+ * should be present on `patch` — an omitted key leaves that field
+ * untouched server-side (`ServicePatchDto`'s `Option<T>` fields
+ * deserialize to `None` when the key is absent).
+ */
+export async function updateService(id: string, patch: ServicePatchInput): Promise<ServiceConfig> {
+  return invoke<ServiceConfig>("update_service", { id, patch });
+}
+
+/**
+ * `remove_service` — input `{ id, deleteSessionData }` (Task 1.12).
+ * Unlike every other command in this file, the Rust side declares
+ * `#[tauri::command(rename_all = "camelCase")]`, so its
+ * `delete_session_data` parameter crosses the wire as `deleteSessionData`
+ * — every other argument here needs no such rename because none of them
+ * have a multi-word parameter name.
+ */
+export async function removeService(id: string, deleteSessionData: boolean): Promise<void> {
+  await invoke<void>("remove_service", { id, deleteSessionData });
 }

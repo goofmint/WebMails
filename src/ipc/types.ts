@@ -90,3 +90,31 @@ export interface Snapshot {
   readonly activeServiceId: string | null;
   readonly configError?: ConfigErrorInfo;
 }
+
+/**
+ * The `patch` argument of `update_service` (Task 1.12; `ServicePatchDto`
+ * in src-tauri/src/commands/dto.rs). Every field is optional — an omitted
+ * key leaves that field unchanged server-side, since `ServicePatchDto`'s
+ * `Option<T>` fields deserialize to `None` when their key is absent, not
+ * just when it is `null` — and each key matches its Rust field name
+ * verbatim (`ServicePatchDto` has no `rename_all`). `icon` is deliberately
+ * left out: the settings edit form built in this task does not expose
+ * icon overrides (Task 1.14).
+ */
+export interface ServicePatchInput {
+  readonly name?: string;
+  readonly url?: string;
+  readonly profile?: string;
+  readonly notifications?: boolean;
+}
+
+/**
+ * The `{ kind, message }` shape every `AppError` serializes as
+ * (src-tauri/src/error.rs, design.md §5.2) — what an `invoke()` call
+ * rejects with when a command fails. See `./errors.ts`'s `toCommandError`
+ * for turning an `invoke()` rejection (typed `unknown`) into this shape.
+ */
+export interface CommandError {
+  readonly kind: string;
+  readonly message: string;
+}
