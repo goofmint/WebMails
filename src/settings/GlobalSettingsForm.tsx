@@ -13,7 +13,7 @@
  * submission and shows an inline error instead of being sent.
  */
 
-import { useState, type FormEvent } from "react";
+import { useId, useState, type FormEvent } from "react";
 import type { CommandError, Settings, SettingsIpc, SettingsPatchInput } from "../ipc";
 import { toCommandError } from "../ipc";
 import { parseU32 } from "./helpers";
@@ -28,21 +28,54 @@ const NUMBER_RANGE_MESSAGE = "Enter a whole number between 0 and 4294967295.";
 export function GlobalSettingsForm({ ipc, settings }: GlobalSettingsFormProps) {
   // `saved` is the last value known to match `config.toml` — the baseline
   // the in-progress edits are diffed against. It starts as the snapshot's
-  // `settings` and is only ever replaced by `update_settings`'s own return
-  // value on a successful save (never by a guess), exactly like
-  // `EditServiceForm`'s `service` prop plays that role for one service.
+  // `settings`, is kept in sync with the `settings` prop (the effect
+  // below), and is also replaced by `update_settings`'s own return value
+  // on a successful save, exactly like `EditServiceForm`'s `service` prop
+  // plays that role for one service.
   const [saved, setSaved] = useState(settings);
   const [reconcileIntervalSeconds, setReconcileIntervalSeconds] = useState(
     String(settings.reconcile_interval_seconds),
   );
+  const [reconcileIntervalSecondsDirty, setReconcileIntervalSecondsDirty] = useState(false);
   const [notifications, setNotifications] = useState(settings.notifications);
+  const [notificationsDirty, setNotificationsDirty] = useState(false);
   const [notificationBatchThreshold, setNotificationBatchThreshold] = useState(
     String(settings.notification_batch_threshold),
   );
+  const [notificationBatchThresholdDirty, setNotificationBatchThresholdDirty] = useState(false);
   const [badgeSidebar, setBadgeSidebar] = useState(settings.badge_sidebar);
+  const [badgeSidebarDirty, setBadgeSidebarDirty] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<CommandError | null>(null);
   const [justSaved, setJustSaved] = useState(false);
+
+  const reconcileIntervalSecondsErrorId = useId();
+  const notificationBatchThresholdErrorId = useId();
+
+  // When the `settings` prop changes (e.g. a snapshot re-fetched after
+  // another window edited the same config), re-baseline `saved` against it
+  // and pull the new value into any field the user hasn't touched yet. A
+  // field the user has already edited (its `*Dirty` flag) keeps the user's
+  // in-progress value. This adjusts state during render (React's pattern
+  // for deriving state from a changed prop) instead of in an effect, which
+  // would render twice per change.
+  const [previousSettings, setPreviousSettings] = useState(settings);
+  if (settings !== previousSettings) {
+    setPreviousSettings(settings);
+    setSaved(settings);
+    if (!reconcileIntervalSecondsDirty) {
+      setReconcileIntervalSeconds(String(settings.reconcile_interval_seconds));
+    }
+    if (!notificationsDirty) {
+      setNotifications(settings.notifications);
+    }
+    if (!notificationBatchThresholdDirty) {
+      setNotificationBatchThreshold(String(settings.notification_batch_threshold));
+    }
+    if (!badgeSidebarDirty) {
+      setBadgeSidebar(settings.badge_sidebar);
+    }
+  }
 
   const parsedReconcileIntervalSeconds = parseU32(reconcileIntervalSeconds);
   const parsedNotificationBatchThreshold = parseU32(notificationBatchThreshold);
@@ -84,9 +117,13 @@ export function GlobalSettingsForm({ ipc, settings }: GlobalSettingsFormProps) {
       const updated = await ipc.updateSettings(patch);
       setSaved(updated);
       setReconcileIntervalSeconds(String(updated.reconcile_interval_seconds));
+      setReconcileIntervalSecondsDirty(false);
       setNotifications(updated.notifications);
+      setNotificationsDirty(false);
       setNotificationBatchThreshold(String(updated.notification_batch_threshold));
+      setNotificationBatchThresholdDirty(false);
       setBadgeSidebar(updated.badge_sidebar);
+      setBadgeSidebarDirty(false);
       setJustSaved(true);
     } catch (caughtError: unknown) {
       // The in-progress values are deliberately left untouched here, so
@@ -116,13 +153,28 @@ export function GlobalSettingsForm({ ipc, settings }: GlobalSettingsFormProps) {
         type="text"
         inputMode="numeric"
         value={reconcileIntervalSeconds}
+        // Disabled while a save is in flight: otherwise a keystroke made
+        // before `updateSettings` resolves would be clobbered when the
+        // success handler resets every field to its returned value.
+        disabled={submitting}
+        aria-required="true"
+        aria-invalid={!reconcileIntervalSecondsIsValid}
+        aria-describedby={
+          reconcileIntervalSecondsIsValid ? undefined : reconcileIntervalSecondsErrorId
+        }
         onChange={(event) => {
           setReconcileIntervalSeconds(event.target.value);
+          setReconcileIntervalSecondsDirty(true);
           setJustSaved(false);
+          setError(null);
         }}
       />
       {!reconcileIntervalSecondsIsValid && (
-        <p className="global-settings-form__error" role="alert">
+        <p
+          id={reconcileIntervalSecondsErrorId}
+          className="global-settings-form__error"
+          role="alert"
+        >
           {NUMBER_RANGE_MESSAGE}
         </p>
       )}
@@ -131,9 +183,12 @@ export function GlobalSettingsForm({ ipc, settings }: GlobalSettingsFormProps) {
         <input
           type="checkbox"
           checked={notifications}
+          disabled={submitting}
           onChange={(event) => {
             setNotifications(event.target.checked);
+            setNotificationsDirty(true);
             setJustSaved(false);
+            setError(null);
           }}
         />
         Notifications
@@ -147,13 +202,25 @@ export function GlobalSettingsForm({ ipc, settings }: GlobalSettingsFormProps) {
         type="text"
         inputMode="numeric"
         value={notificationBatchThreshold}
+        disabled={submitting}
+        aria-required="true"
+        aria-invalid={!notificationBatchThresholdIsValid}
+        aria-describedby={
+          notificationBatchThresholdIsValid ? undefined : notificationBatchThresholdErrorId
+        }
         onChange={(event) => {
           setNotificationBatchThreshold(event.target.value);
+          setNotificationBatchThresholdDirty(true);
           setJustSaved(false);
+          setError(null);
         }}
       />
       {!notificationBatchThresholdIsValid && (
-        <p className="global-settings-form__error" role="alert">
+        <p
+          id={notificationBatchThresholdErrorId}
+          className="global-settings-form__error"
+          role="alert"
+        >
           {NUMBER_RANGE_MESSAGE}
         </p>
       )}
@@ -162,9 +229,12 @@ export function GlobalSettingsForm({ ipc, settings }: GlobalSettingsFormProps) {
         <input
           type="checkbox"
           checked={badgeSidebar}
+          disabled={submitting}
           onChange={(event) => {
             setBadgeSidebar(event.target.checked);
+            setBadgeSidebarDirty(true);
             setJustSaved(false);
+            setError(null);
           }}
         />
         Badge sidebar
@@ -176,7 +246,12 @@ export function GlobalSettingsForm({ ipc, settings }: GlobalSettingsFormProps) {
         </p>
       )}
 
-      {justSaved && error === null && <p className="global-settings-form__success">Saved.</p>}
+      {/* Always mounted — rather than only while `justSaved` — so
+          assistive tech has a stable `role="status"` region to watch;
+          only the message text inside it is conditional. */}
+      <p className="global-settings-form__success" role="status">
+        {justSaved && error === null ? "Saved." : ""}
+      </p>
 
       <button type="submit" disabled={!canSubmit}>
         Save

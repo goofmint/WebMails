@@ -30,8 +30,16 @@ export interface MockSettingsIpc extends SettingsIpc {
 /** Creates a mock `SettingsIpc` whose `getSnapshot` initially resolves to `initialSnapshot`. */
 export function createMockSettingsIpc(initialSnapshot: Snapshot): MockSettingsIpc {
   let servicesChangedListeners: (() => void)[] = [];
+  // The settings actually "on disk" as far as this mock is concerned —
+  // starts as the initial snapshot's, and each `updateSettings` call
+  // replaces it with the patch applied on top, so `getSnapshot` and the
+  // next `updateSettings` both see every earlier save, not just the
+  // first one.
+  let currentSettings = initialSnapshot.settings;
 
-  const getSnapshot = vi.fn((): Promise<Snapshot> => Promise.resolve(initialSnapshot));
+  const getSnapshot = vi.fn((): Promise<Snapshot> =>
+    Promise.resolve({ ...initialSnapshot, settings: currentSettings }),
+  );
 
   const addService = vi.fn((name: string, url: string, profile: string): Promise<ServiceConfig> =>
     Promise.resolve({
@@ -58,15 +66,11 @@ export function createMockSettingsIpc(initialSnapshot: Snapshot): MockSettingsIp
   const removeService = vi.fn((): Promise<void> => Promise.resolve());
 
   const updateSettings = vi.fn((patch: SettingsPatchInput): Promise<Settings> => {
-    const current = initialSnapshot.settings;
-    return Promise.resolve({
-      reconcile_interval_seconds:
-        patch.reconcile_interval_seconds ?? current?.reconcile_interval_seconds ?? 60,
-      notifications: patch.notifications ?? current?.notifications ?? true,
-      notification_batch_threshold:
-        patch.notification_batch_threshold ?? current?.notification_batch_threshold ?? 5,
-      badge_sidebar: patch.badge_sidebar ?? current?.badge_sidebar ?? true,
-    });
+    if (currentSettings === null) {
+      return Promise.reject(new Error("createMockSettingsIpc: no initial settings to patch"));
+    }
+    currentSettings = { ...currentSettings, ...patch };
+    return Promise.resolve(currentSettings);
   });
 
   const selectService = vi.fn((): Promise<void> => Promise.resolve());
