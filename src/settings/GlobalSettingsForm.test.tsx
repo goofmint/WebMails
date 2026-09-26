@@ -199,6 +199,21 @@ describe("GlobalSettingsForm", () => {
     expect(ipc.updateSettings).toHaveBeenCalledWith({ reconcile_interval_seconds: 999 });
   });
 
+  it("treats a field edited back to its saved value as untouched", () => {
+    const { ipc, settings, view } = renderForm();
+    const field = screen.getByLabelText<HTMLInputElement>("Reconcile interval (seconds)");
+
+    // Edit, then revert to the saved value: the field is no longer dirty...
+    fireEvent.change(field, { target: { value: "999" } });
+    fireEvent.change(field, { target: { value: String(settings.reconcile_interval_seconds) } });
+
+    // ...so a new settings prop updates it like any untouched field.
+    view.rerender(
+      <GlobalSettingsForm ipc={ipc} settings={{ ...settings, reconcile_interval_seconds: 42 }} />,
+    );
+    expect(field.value).toBe("42");
+  });
+
   it("disables every input while a save is in flight", async () => {
     const { ipc } = renderForm();
     let resolveUpdate: (settings: Settings) => void = () => {};

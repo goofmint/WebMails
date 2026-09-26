@@ -164,7 +164,9 @@ export function GlobalSettingsForm({ ipc, settings }: GlobalSettingsFormProps) {
         }
         onChange={(event) => {
           setReconcileIntervalSeconds(event.target.value);
-          setReconcileIntervalSecondsDirty(true);
+          setReconcileIntervalSecondsDirty(
+            parseU32(event.target.value) !== saved.reconcile_interval_seconds,
+          );
           setJustSaved(false);
           setError(null);
         }}
@@ -186,7 +188,7 @@ export function GlobalSettingsForm({ ipc, settings }: GlobalSettingsFormProps) {
           disabled={submitting}
           onChange={(event) => {
             setNotifications(event.target.checked);
-            setNotificationsDirty(true);
+            setNotificationsDirty(event.target.checked !== saved.notifications);
             setJustSaved(false);
             setError(null);
           }}
@@ -210,7 +212,9 @@ export function GlobalSettingsForm({ ipc, settings }: GlobalSettingsFormProps) {
         }
         onChange={(event) => {
           setNotificationBatchThreshold(event.target.value);
-          setNotificationBatchThresholdDirty(true);
+          setNotificationBatchThresholdDirty(
+            parseU32(event.target.value) !== saved.notification_batch_threshold,
+          );
           setJustSaved(false);
           setError(null);
         }}
@@ -232,7 +236,7 @@ export function GlobalSettingsForm({ ipc, settings }: GlobalSettingsFormProps) {
           disabled={submitting}
           onChange={(event) => {
             setBadgeSidebar(event.target.checked);
-            setBadgeSidebarDirty(true);
+            setBadgeSidebarDirty(event.target.checked !== saved.badge_sidebar);
             setJustSaved(false);
             setError(null);
           }}
