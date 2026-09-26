@@ -187,6 +187,57 @@ describe("watchSelector", () => {
     expect(() => watchSelector(document, ":::not-a-selector", vi.fn())).toThrow(/invalid selector/);
   });
 
+  it("calls cb when an attribute change makes an element start matching the selector", async () => {
+    document.body.innerHTML = '<span id="el"></span>';
+    const cb = vi.fn();
+    const unwatch = watchSelector(document, ".count", cb);
+
+    document.getElementById("el")!.classList.add("count");
+    await flushMicrotasks();
+
+    expect(cb).toHaveBeenCalledTimes(1);
+    unwatch();
+  });
+
+  it("calls cb when an attribute change makes an element stop matching the selector", async () => {
+    document.body.innerHTML = '<span id="el" class="count"></span>';
+    const cb = vi.fn();
+    const unwatch = watchSelector(document, ".count", cb);
+
+    document.getElementById("el")!.classList.remove("count");
+    await flushMicrotasks();
+
+    expect(cb).toHaveBeenCalledTimes(1);
+    unwatch();
+  });
+
+  it("does not call cb for a childList change inside a matching ancestor when no changed node matches", async () => {
+    document.body.innerHTML = '<div class="count"><ul><li>a</li></ul></div>';
+    const cb = vi.fn();
+    const unwatch = watchSelector(document, ".count", cb);
+
+    const li = document.createElement("li");
+    li.textContent = "b";
+    document.querySelector("ul")!.appendChild(li);
+    await flushMicrotasks();
+
+    expect(cb).not.toHaveBeenCalled();
+    unwatch();
+  });
+
+  it("calls cb when characterData inside a matching element (nested) changes", async () => {
+    document.body.innerHTML = '<span class="count"><b>1</b></span>';
+    const cb = vi.fn();
+    const unwatch = watchSelector(document, ".count", cb);
+
+    const textNode = document.querySelector("b")!.firstChild as CharacterData;
+    textNode.data = "2";
+    await flushMicrotasks();
+
+    expect(cb).toHaveBeenCalledTimes(1);
+    unwatch();
+  });
+
   it("reflects DOM changes back through selectorCount after a watched mutation", async () => {
     document.body.innerHTML = `
       <ul id="list">

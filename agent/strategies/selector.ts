@@ -64,23 +64,48 @@ export function selectorCount(
   return parseCount(element.textContent ?? "");
 }
 
-// True when `node` is, contains, or (for elements) is contained by an
-// element matching `selector`. Used to decide whether a mutation could
-// change what `selectorCount(document, selector, ...)` would return.
-function isRelevant(node: Node, selector: string): boolean {
-  if (node.nodeType === Node.ELEMENT_NODE) {
-    const element = node as Element;
-    return (
-      element.matches(selector) ||
-      element.closest(selector) !== null ||
-      element.querySelector(selector) !== null
-    );
+// True for a `characterData` mutation whose text node lives inside (or as)
+// an element matching `selector`. Text nodes have no `matches`/`closest` of
+// their own, so relevance is judged via their element parent (an
+// ancestor-or-self match on the parent): a text change deep inside a
+// matching element (e.g. a badge's own text) can change what
+// `selectorCount(document, selector, ...)` returns.
+function isCharacterDataRelevant(target: Node, selector: string): boolean {
+  const parent = target.parentElement;
+  return parent !== null && (parent.matches(selector) || parent.closest(selector) !== null);
+}
+
+// True when `node` is an element that itself matches `selector`, or
+// contains a descendant matching it. Used for `childList` mutations, where
+// only the changed nodes themselves (not their ancestors) can tell us
+// whether the set of elements matching `selector` changed.
+function matchesOrContainsMatch(node: Node, selector: string): boolean {
+  if (node.nodeType !== Node.ELEMENT_NODE) {
+    return false;
   }
-  if (node.nodeType === Node.TEXT_NODE || node.nodeType === Node.CDATA_SECTION_NODE) {
-    // Text nodes have no `matches`/`closest` of their own; judge relevance
-    // by their element parent (an ancestor-or-self match on the parent).
-    const parent = node.parentElement;
-    return parent !== null && (parent.matches(selector) || parent.closest(selector) !== null);
+  const element = node as Element;
+  return element.matches(selector) || element.querySelector(selector) !== null;
+}
+
+// True for a `childList` mutation that added or removed a node matching
+// `selector` (or containing a match), or whose target itself matches (or
+// contains a match). Deliberately does not consult ancestors via
+// `closest`: an ancestor's descendants changing doesn't by itself tell us
+// whether an element matching `selector` was added or removed anywhere in
+// the tree, only the changed nodes and target can.
+function isChildListRelevant(mutation: MutationRecord, selector: string): boolean {
+  if (matchesOrContainsMatch(mutation.target, selector)) {
+    return true;
+  }
+  for (const node of mutation.addedNodes) {
+    if (matchesOrContainsMatch(node, selector)) {
+      return true;
+    }
+  }
+  for (const node of mutation.removedNodes) {
+    if (matchesOrContainsMatch(node, selector)) {
+      return true;
+    }
   }
   return false;
 }
@@ -98,26 +123,31 @@ export function watchSelector(document: Document, selector: string, cb: () => vo
   const root = document.documentElement;
   const observer = new MutationObserver((mutations) => {
     for (const mutation of mutations) {
-      if (isRelevant(mutation.target, selector)) {
+      if (mutation.type === "attributes") {
+        // An attribute change (e.g. a class toggle) can make an element
+        // start or stop matching `selector`; matches()/closest() only see
+        // the post-mutation DOM, so there is no reliable "was this
+        // relevant" check here. Always notify, still at most once per
+        // batch.
         cb();
         return;
       }
-      for (const node of mutation.addedNodes) {
-        if (isRelevant(node, selector)) {
+      if (mutation.type === "childList") {
+        if (isChildListRelevant(mutation, selector)) {
           cb();
           return;
         }
+        continue;
       }
-      for (const node of mutation.removedNodes) {
-        if (isRelevant(node, selector)) {
-          cb();
-          return;
-        }
+      if (isCharacterDataRelevant(mutation.target, selector)) {
+        cb();
+        return;
       }
     }
   });
 
   observer.observe(root, {
+    attributes: true,
     childList: true,
     subtree: true,
     characterData: true,
