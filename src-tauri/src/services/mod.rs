@@ -476,6 +476,9 @@ impl ServiceManager {
         // without this early return.
         ready.pending.retain(|pending_id| pending_id != id);
         if !ready.created.contains(id) {
+            // It may still have a status (e.g. `CreateFailed`); the
+            // service is gone, so its status goes too.
+            self.remove_status(id);
             return;
         }
 
