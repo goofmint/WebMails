@@ -80,6 +80,22 @@ For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/
 - [ ] Adding a URL in the settings window's add form produces a usable mail tab: the service appears in the sidebar, becomes the active tab, and its page loads and can be signed into (macOS)
 - [ ] Same, Windows 11
 
+### Task 1.14 — Icon resolution
+
+For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/fail, with notes) before checking it off.
+
+- [ ] Real services (e.g. Gmail, iCloud, Outlook) show their own favicon/apple-touch-icon in the sidebar after their page finishes loading, not the generated letter icon (macOS)
+- [ ] Same real-service icon rendering, Windows 11
+- [ ] Two services with no distinguishing icon (both left on the generated letter fallback) show visibly different colours in the sidebar (macOS/Windows)
+- [ ] "Refresh icon" (once exposed in the settings UI) re-fetches and replaces an already-cached icon (macOS)
+- [ ] Same, Windows 11
+- [ ] Setting a file override (once exposed in the settings UI) copies the chosen file into `{data_dir}/icons/<id>.src` and the sidebar shows it after resolution (macOS)
+- [ ] Same file override behaviour, Windows 11
+- [ ] Setting a URL override (once exposed in the settings UI) downloads and normalises that URL's image instead of using the agent's candidates (macOS)
+- [ ] Same URL override behaviour, Windows 11
+- [ ] A service whose icon candidates and override both fail to resolve (e.g. unreachable URL) falls back to the generated letter icon, with no crash or stuck loading state (macOS/Windows)
+- [ ] Removing a service and re-adding one under the same id starts icon resolution fresh (no stale cached PNG reused) (macOS/Windows)
+
 ## M2 — Unread
 
 Exit criterion (SPEC §16): N Gmail accounts plus iCloud show live counts while the window is in the background.

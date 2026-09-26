@@ -72,6 +72,18 @@ export interface ServiceStatus {
 }
 
 /**
+ * One `icons` map entry (`CachedIcon` in `icons/mod.rs`): a service that
+ * currently has a cached icon PNG. `path` is an absolute filesystem path,
+ * meant to be passed through `convertFileSrc` (Task 1.14; design.md
+ * §2.2.10) — never rendered as a raw `<img src>`. `version` changes every
+ * time the PNG is rewritten, for busting the resulting asset URL's cache.
+ */
+export interface CachedIconInfo {
+  readonly path: string;
+  readonly version: number;
+}
+
+/**
  * `get_snapshot`'s response (`SnapshotDto`). Only this wrapper's own keys
  * are camelCase (`#[serde(rename = "sidebarWidth")]`,
  * `#[serde(rename = "activeServiceId")]`,
@@ -89,6 +101,9 @@ export interface Snapshot {
   readonly statuses: Readonly<Record<string, ServiceStatus>>;
   readonly sidebarWidth: number;
   readonly activeServiceId: string | null;
+  /** Keyed by service id; a service absent from this map has no cached
+   * icon yet, and renders the generated letter icon instead. */
+  readonly icons: Readonly<Record<string, CachedIconInfo>>;
   readonly configError?: ConfigErrorInfo;
 }
 

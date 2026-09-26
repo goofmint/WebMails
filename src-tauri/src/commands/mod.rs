@@ -36,6 +36,7 @@ use url::Url;
 use crate::config::{IconSource, ProfileName, ServiceConfig, ServiceId, Settings};
 use crate::error::AppError;
 use crate::host::layout::SIDEBAR_WIDTH;
+use crate::icons::IconOverride;
 use crate::services::ServiceManager;
 
 use dto::{ServicePatchDto, SettingsPatchDto};
@@ -60,6 +61,8 @@ pub const COMMAND_NAMES: &[&str] = &[
     "update_settings",
     "open_settings",
     "reload_service",
+    "set_icon_override",
+    "refresh_icon",
 ];
 
 /// The webview label `open_settings` creates/focuses its window under
@@ -90,6 +93,7 @@ pub async fn get_snapshot(
         snapshot.statuses,
         SIDEBAR_WIDTH,
         snapshot.active,
+        snapshot.icons,
     ))
 }
 
@@ -199,6 +203,46 @@ pub async fn reload_service(
     id: ServiceId,
 ) -> Result<(), AppError> {
     manager.reload_service(&id).await
+}
+
+/// Sets `id`'s icon override (design.md §2.2.12: input `{ id, source:
+/// favicon | file(path) | url }`, output `—`): persists it via
+/// [`ServiceManager::set_icon_override`] (which already applies the
+/// ordinary `update_service` edit-and-reconcile path, so `services-changed`
+/// still fires), then invalidates the current cache and resolves the new
+/// source in the background — [`ServiceManager::spawn_icon_resolve`] emits
+/// `service-icon-changed` once that finishes, if it changed the cache.
+#[tauri::command]
+pub async fn set_icon_override(
+    manager: State<'_, Arc<ServiceManager>>,
+    id: ServiceId,
+    source: IconOverride,
+) -> Result<(), AppError> {
+    let manager = Arc::clone(manager.inner());
+    let icon_source = manager.set_icon_override(&id, source).await?;
+    manager.clear_icon_cache(&id);
+    ServiceManager::spawn_icon_resolve(&manager, id, icon_source);
+    Ok(())
+}
+
+/// Re-resolves `id`'s icon from scratch (design.md §2.2.12: input `{ id
+/// }`, output `—`): deletes the current cache so resolution cannot skip
+/// re-fetching, then resolves in the background using `id`'s currently
+/// configured icon source and last-known `iconCandidates` — see
+/// [`set_icon_override`]'s doc comment for the shared resolve/emit path.
+#[tauri::command]
+pub async fn refresh_icon(
+    manager: State<'_, Arc<ServiceManager>>,
+    id: ServiceId,
+) -> Result<(), AppError> {
+    let manager = Arc::clone(manager.inner());
+    let icon_source = manager
+        .icon_source_for(&id)
+        .await
+        .ok_or_else(|| AppError::Config(format!("service '{id}' does not exist")))?;
+    manager.clear_icon_cache(&id);
+    ServiceManager::spawn_icon_resolve(&manager, id, icon_source);
+    Ok(())
 }
 
 #[cfg(test)]

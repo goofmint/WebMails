@@ -88,6 +88,26 @@ describe("createShellStore", () => {
     });
   });
 
+  it("refetches the snapshot on a service-icon-changed event", async () => {
+    const ipc = createMockShellIpc(snapshot());
+    const store = createShellStore(ipc);
+    store.start();
+    await vi.waitFor(() => expect(store.getState().status).toBe("ready"));
+    expect(ipc.getSnapshot).toHaveBeenCalledTimes(1);
+
+    ipc.getSnapshot.mockResolvedValueOnce(
+      snapshot({ icons: { gmail: { path: "/tmp/eluma/data/icons/gmail.png", version: 1 } } }),
+    );
+    ipc.emitServiceIconChanged("gmail");
+
+    await vi.waitFor(() => {
+      expect(ipc.getSnapshot).toHaveBeenCalledTimes(2);
+      const state = store.getState();
+      if (state.status !== "ready") throw new Error("expected ready state");
+      expect(state.snapshot.icons.gmail?.version).toBe(1);
+    });
+  });
+
   it("is idempotent: a second start() does not refetch", async () => {
     const ipc = createMockShellIpc(snapshot());
     const store = createShellStore(ipc);
@@ -273,6 +293,7 @@ describe("createShellStore", () => {
       onServicesChanged: () => servicesDeferred.promise,
       onSelectService: () => selectDeferred.promise,
       onStatusChanged: () => Promise.resolve(() => {}),
+      onServiceIconChanged: () => Promise.resolve(() => {}),
     };
     const store = createShellStore(ipc);
 
@@ -309,6 +330,7 @@ describe("createShellStore", () => {
       onServicesChanged: onceSequence([deferredA1.promise, deferredB1.promise]),
       onSelectService: onceSequence([deferredA2.promise, deferredB2.promise]),
       onStatusChanged: () => Promise.resolve(() => {}),
+      onServiceIconChanged: () => Promise.resolve(() => {}),
     };
     const store = createShellStore(ipc);
 
@@ -352,6 +374,7 @@ describe("createShellStore", () => {
       onServicesChanged: () => Promise.resolve(unlistenServices),
       onSelectService: () => Promise.reject(new Error("registration failed")),
       onStatusChanged: () => Promise.resolve(() => {}),
+      onServiceIconChanged: () => Promise.resolve(() => {}),
     };
     const store = createShellStore(ipc);
 

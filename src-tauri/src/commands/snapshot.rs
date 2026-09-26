@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, HashMap};
 use serde::Serialize;
 
 use crate::config::{ConfigError, ServiceConfig, ServiceId, Settings};
+use crate::icons::CachedIcon;
 use crate::unread::ServiceStatus;
 
 /// `get_snapshot`'s response (design.md §2.2.12).
@@ -41,6 +42,12 @@ pub struct SnapshotDto {
     /// `None` in the `Failed` state too).
     #[serde(rename = "activeServiceId")]
     pub active_service_id: Option<ServiceId>,
+    /// Every service that currently has a cached icon PNG (design.md
+    /// §2.2.10): present in this map means the shell renders the cached
+    /// PNG via the asset protocol; absent means it renders the generated
+    /// letter icon instead. Always present (like `services`), empty when
+    /// nothing is cached yet or `configError` is `Some`.
+    pub icons: BTreeMap<ServiceId, CachedIcon>,
     #[serde(rename = "configError", skip_serializing_if = "Option::is_none")]
     pub config_error: Option<ConfigError>,
 }
@@ -58,6 +65,7 @@ pub fn build_snapshot(
     statuses: HashMap<ServiceId, ServiceStatus>,
     sidebar_width: f64,
     active_service_id: Option<ServiceId>,
+    icons: BTreeMap<ServiceId, CachedIcon>,
 ) -> SnapshotDto {
     SnapshotDto {
         settings,
@@ -65,6 +73,7 @@ pub fn build_snapshot(
         statuses: statuses.into_iter().collect(),
         sidebar_width,
         active_service_id,
+        icons,
         config_error,
     }
 }
@@ -105,6 +114,7 @@ mod tests {
             HashMap::new(),
             64.0,
             None,
+            BTreeMap::new(),
         );
         let value = serde_json::to_value(&dto).expect("serialize");
 
@@ -122,7 +132,15 @@ mod tests {
             key: Some("services[0].url".to_string()),
             reason: "invalid scheme".to_string(),
         };
-        let dto = build_snapshot(None, Vec::new(), Some(error), HashMap::new(), 64.0, None);
+        let dto = build_snapshot(
+            None,
+            Vec::new(),
+            Some(error),
+            HashMap::new(),
+            64.0,
+            None,
+            BTreeMap::new(),
+        );
         let value = serde_json::to_value(&dto).expect("serialize");
 
         assert_eq!(value["settings"], json!(null));
@@ -144,6 +162,7 @@ mod tests {
             HashMap::new(),
             64.0,
             None,
+            BTreeMap::new(),
         );
         let value = serde_json::to_value(&dto).expect("serialize");
         let obj = value.as_object().expect("object");
@@ -162,7 +181,15 @@ mod tests {
             ServiceStatus::Ok { count: 3 },
         );
 
-        let dto = build_snapshot(Some(settings()), Vec::new(), None, statuses, 64.0, None);
+        let dto = build_snapshot(
+            Some(settings()),
+            Vec::new(),
+            None,
+            statuses,
+            64.0,
+            None,
+            BTreeMap::new(),
+        );
         let value = serde_json::to_value(&dto).expect("serialize");
 
         assert_eq!(value["statuses"]["gmail"], json!({ "kind": "loading" }));
@@ -181,6 +208,7 @@ mod tests {
             HashMap::new(),
             64.0,
             Some(ServiceId::new("gmail").expect("valid id")),
+            BTreeMap::new(),
         );
         let value = serde_json::to_value(&dto).expect("serialize");
         assert_eq!(value["activeServiceId"], json!("gmail"));
@@ -195,10 +223,54 @@ mod tests {
             HashMap::new(),
             64.0,
             None,
+            BTreeMap::new(),
         );
         let value = serde_json::to_value(&dto).expect("serialize");
         let obj = value.as_object().expect("object");
         assert!(obj.contains_key("activeServiceId"));
         assert_eq!(value["activeServiceId"], json!(null));
+    }
+
+    #[test]
+    fn icons_map_serializes_cached_entries_by_service_id() {
+        let icon_id = ServiceId::new("gmail").expect("valid id");
+        let mut icons = BTreeMap::new();
+        icons.insert(
+            icon_id,
+            CachedIcon {
+                path: PathBuf::from("/tmp/eluma/data/icons/gmail.png"),
+                version: 42,
+            },
+        );
+        let dto = build_snapshot(
+            Some(settings()),
+            vec![service()],
+            None,
+            HashMap::new(),
+            64.0,
+            None,
+            icons,
+        );
+        let value = serde_json::to_value(&dto).expect("serialize");
+        assert_eq!(
+            value["icons"]["gmail"]["path"],
+            json!("/tmp/eluma/data/icons/gmail.png")
+        );
+        assert_eq!(value["icons"]["gmail"]["version"], json!(42));
+    }
+
+    #[test]
+    fn icons_map_is_present_but_empty_when_nothing_is_cached() {
+        let dto = build_snapshot(
+            Some(settings()),
+            vec![service()],
+            None,
+            HashMap::new(),
+            64.0,
+            None,
+            BTreeMap::new(),
+        );
+        let value = serde_json::to_value(&dto).expect("serialize");
+        assert_eq!(value["icons"], json!({}));
     }
 }
