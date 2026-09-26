@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<feed xmlns='http://purl.org/atom/ns#' version='0.3'>
+  <title>Gmail - Inbox for someone@gmail.com</title>
+  <fullcount>3</fullcount>
+  <entry>
+    <title>Truncated response body, mismatched tag below</title>
+    <id>tag:gmail.google.com,2004:1141377934898454727</entry>
+  </feed>

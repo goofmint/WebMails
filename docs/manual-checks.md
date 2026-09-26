@@ -116,6 +116,18 @@ For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/
 - [ ] Same off-origin rejection after navigation (Windows 11)
 - [ ] The agent does not run inside an embedded `<iframe>` on the service page — record as not applicable for this task, since the frame guard is Task 2.4's job and the placeholder agent does nothing frame-aware yet
 
+### Task 2.7 — Gmail recipe
+
+Run these after Task 2.3 and Task 2.4 are both in place (a real service webview running the injected agent). For each item, record date, platform, account (numeric `u/<n>` vs. email-address segment) and result before checking it off.
+
+- [ ] With the service URL on the numeric segment (e.g. `https://mail.google.com/mail/u/0/`), the recipe validates on first load (`describe()`'s strategy stays `"fetch"`, not `"title"`) and the reported count matches the real inbox's unread count
+- [ ] With the service URL on an email-address segment (e.g. `https://mail.google.com/mail/u/someone@example.com/`), same validation and count check — this is the case SPEC.md §17 open question 3 (Gmail account addressing) calls out as unverified
+- [ ] Receiving a new message while the app is running updates the reported count and message list without a page reload (confirms `watchTitle` is triggering a re-fetch on Gmail's own title change)
+- [ ] Signing out of the Gmail account (or letting the session expire) drives the service to `NeedsAttention`/a `count: null` report, not a stale or incorrect count
+- [ ] Record whether `/mail/u/<segment>/feed/atom` needs an `?authuser=` query parameter for any of the tested accounts (SPEC.md §17 open question 3)
+- [ ] Record the exact `document.title` text Gmail uses once unread mail exceeds 1,000 (does it show the literal count, `"1,000+"`, or something else — this affects whether `GMAIL_TITLE_PATTERN` in `agent/recipes/gmail.ts` still matches)
+- [ ] Record whether the entry `<link>`'s `message_id` query parameter (used to build the `#all/<message_id>` deep link) is present and correctly clickable for every tested account — this parsing choice (agent/recipes/gmail.ts's `extractMessageId`) is inferred from the feed's known historical shape, not from current official documentation
+
 ## M3 — Background survival
 
 Exit criterion (SPEC §16): badges still correct after 2 hours minimised, on both platforms — or the Windows story is honestly documented as degraded.
