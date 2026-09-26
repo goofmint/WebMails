@@ -56,10 +56,15 @@ export function createSameOriginFetch(
     // the only allowed method (case-insensitive; an omitted method defaults
     // to `GET` per the Fetch spec and is allowed), and a `body` is rejected
     // outright since a `GET` request can't carry one meaningfully.
-    if (init?.method !== undefined && init.method.toUpperCase() !== "GET") {
-      rejectNonGet(init.method);
+    // Snapshot `init` once: every check below and the request itself use
+    // this copy, so an accessor on the caller's object can't return one
+    // value to the validation and another to `baseFetch`.
+    const snapshot: RequestInit = { ...init };
+    const method = snapshot.method;
+    if (method !== undefined && method.toUpperCase() !== "GET") {
+      rejectNonGet(method);
     }
-    if (init?.body !== undefined && init.body !== null) {
+    if (snapshot.body !== undefined && snapshot.body !== null) {
       rejectBody();
     }
 
@@ -79,7 +84,8 @@ export function createSameOriginFetch(
     // same-origin redirect (e.g. Gmail's own login page) stays visible to
     // the caller.
     const response = await baseFetch(target.toString(), {
-      ...init,
+      ...snapshot,
+      method: "GET",
       mode: "same-origin",
       credentials: "same-origin",
     });

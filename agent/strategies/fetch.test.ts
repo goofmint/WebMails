@@ -156,6 +156,22 @@ describe("createSameOriginFetch", () => {
     });
   });
 
+  it("sends GET even if a method getter changes after validation", async () => {
+    const baseFetch = makeBaseFetch(makeResponse({ url: "https://mail.google.com/feed/atom" }));
+    const sameOriginFetch = createSameOriginFetch(SERVICE_URL, baseFetch);
+    let reads = 0;
+    const init: RequestInit = {
+      get method() {
+        reads += 1;
+        return reads === 1 ? "GET" : "POST";
+      },
+    };
+
+    await sameOriginFetch("/feed/atom", init);
+
+    expect(baseFetch.mock.calls[0]?.[1]).toMatchObject({ method: "GET" });
+  });
+
   it("rejects when the final response.url lands on another origin (cross-origin redirect)", async () => {
     const baseFetch = makeBaseFetch(
       makeResponse({ status: 200, redirected: true, url: "https://accounts.google.com/login" }),
