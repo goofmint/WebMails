@@ -110,6 +110,21 @@ export interface ServicePatchInput {
 }
 
 /**
+ * The `patch` argument of `update_settings` (Task 1.13; `SettingsPatchDto`
+ * in src-tauri/src/commands/dto.rs). Every field is optional and, like
+ * `ServicePatchInput`, an omitted key leaves that field unchanged
+ * server-side. No `rename_all` on the Rust DTO, so every key matches its
+ * Rust field name verbatim (snake_case) — unlike `ServicePatchInput`, whose
+ * own field names already happen to be single words.
+ */
+export interface SettingsPatchInput {
+  readonly reconcile_interval_seconds?: number;
+  readonly notifications?: boolean;
+  readonly notification_batch_threshold?: number;
+  readonly badge_sidebar?: boolean;
+}
+
+/**
  * The `{ kind, message }` shape every `AppError` serializes as
  * (src-tauri/src/error.rs, design.md §5.2) — what an `invoke()` call
  * rejects with when a command fails. See `./errors.ts`'s `toCommandError`

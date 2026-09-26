@@ -50,3 +50,13 @@ body {
   font-size: 12px;
   font-style: italic;
 }
+
+.global-settings-form__error {
+  color: #b00020;
+  font-size: 12px;
+}
+
+.global-settings-form__success {
+  color: #1a7a1a;
+  font-size: 12px;
+}
