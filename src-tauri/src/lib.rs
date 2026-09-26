@@ -10,6 +10,7 @@ mod platform;
 pub mod profile;
 pub mod services;
 pub mod state;
+pub mod unread;
 
 use std::sync::Arc;
 

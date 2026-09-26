@@ -5,10 +5,12 @@
 //! path, the open [`StateStore`], a reference to the [`WebviewHost`] and
 //! the profile backend, and enough bookkeeping — which service ids have a
 //! live webview, which are still waiting for their staggered startup
-//! turn, which is active, any per-service creation error, and which
-//! `(service id, origin)` pairs already have a runtime capability granted
-//! (design.md §2.2.6) — to reconcile a [`ConfigEdit`] into webview
-//! operations. [`reconcile::diff`] computes *what* to do, purely; this
+//! turn, which is active, and which `(service id, origin)` pairs already
+//! have a runtime capability granted (design.md §2.2.6) — to reconcile a
+//! [`ConfigEdit`] into webview operations. Per-service `unread` status
+//! (including a creation failure, design.md §5.1's `NeedsAttention
+//! (CreateFailed)`) lives separately, in `unread::StatusStore` (design.md
+//! §2.2.7). [`reconcile::diff`] computes *what* to do, purely; this
 //! module is the only place that actually calls the [`WebviewHost`], the
 //! profile backend, or [`crate::agent_bridge::capability`]'s runtime
 //! capability registration (before every `host.create`).
@@ -32,13 +34,14 @@ mod slug;
 
 use reconcile::WebviewOp;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as SyncMutex};
 use std::time::Duration;
 
 use serde::Serialize;
 use tauri::async_runtime::Mutex;
+use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Emitter, Wry};
 use url::Url;
 use uuid::Uuid;
@@ -49,10 +52,11 @@ use crate::config::{
     ServicePatch, Settings, SettingsPatch,
 };
 use crate::error::{AppError, AppResult};
-use crate::host::{ServiceWebviewSpec, WebviewHost};
+use crate::host::{PageLoadHandler, ServiceWebviewSpec, WebviewHost};
 use crate::platform::app_nap::AppNapGuard;
 use crate::profile::{self, PlatformProfileBackend, ProfileBackend, ProfileKey};
 use crate::state::StateStore;
+use crate::unread::{emit_if_changed, ServiceStatus, StatusChanged, StatusStore};
 
 /// Delay between each service's staggered creation at startup (design.md
 /// §2.2.5).
@@ -68,7 +72,13 @@ const SERVICES_CHANGED_EVENT: &str = "services-changed";
 /// `{ serviceId }`.
 const SELECT_SERVICE_EVENT: &str = "select-service";
 
-/// The webview label the shell (sidebar) runs under (design.md §2.2.4).
+/// The event emitted to the `shell` webview whenever a service's
+/// [`crate::unread::ServiceStatus`] actually changes, and only then
+/// (design.md §2.2.7).
+const STATUS_CHANGED_EVENT: &str = "status-changed";
+
+/// The webview label every shell-only event (`select-service` and
+/// `status-changed` included) targets (design.md §2.2.4).
 const SHELL_LABEL: &str = "shell";
 
 /// The webview label the settings window runs under (design.md §2.2.12,
@@ -101,12 +111,6 @@ struct Ready {
     /// processed every id it started with.
     pending: Vec<ServiceId>,
     active: Option<ServiceId>,
-    /// Per-service webview creation failures (design.md §5.1's
-    /// `NeedsAttention(CreateFailed)`), keyed by service id, valued by
-    /// the failure's display message. Task 2.3 moves this into the
-    /// `unread` store's `ServiceStatus` instead; until then this is just
-    /// where the failure is kept.
-    create_errors: BTreeMap<ServiceId, String>,
     /// Every `(service id, origin)` pair a runtime capability has already
     /// been granted for, for the life of the process (design.md §2.2.6;
     /// see `agent_bridge::capability`'s module doc for why re-granting an
@@ -153,6 +157,13 @@ pub struct ServiceManager {
     /// direct reflection of the live resident count. On non-macOS this
     /// is a documented no-op (see `platform::app_nap`'s module doc).
     app_nap: AppNapGuard,
+    /// Per-service `unread` status (design.md §2.2.7). A lock separate
+    /// from `inner`'s: it is read and written from `on_page_load`
+    /// callbacks the host may invoke independently of any `inner`-held
+    /// operation, and it never needs to be consistent with `inner` under
+    /// the same lock — every mutator here is a single, independent
+    /// change-detected transition (`unread::StatusStore`'s own doc).
+    status_store: Arc<SyncMutex<StatusStore>>,
 }
 
 impl ServiceManager {
@@ -177,10 +188,10 @@ impl ServiceManager {
                 created: BTreeSet::new(),
                 pending: Vec::new(),
                 active: None,
-                create_errors: BTreeMap::new(),
                 granted_capability_origins: BTreeMap::new(),
             })),
             app_nap: AppNapGuard::new(),
+            status_store: Arc::new(SyncMutex::new(StatusStore::new())),
         }
     }
 
@@ -210,6 +221,7 @@ impl ServiceManager {
             // guard is constructed but `sync` is never called, so it
             // never acquires an assertion.
             app_nap: AppNapGuard::new(),
+            status_store: Arc::new(SyncMutex::new(StatusStore::new())),
         }
     }
 
@@ -326,15 +338,16 @@ impl ServiceManager {
     /// not already have a webview — both a no-op `Ok(())`, not an error,
     /// so a service removed or already created before its startup turn
     /// (or before a `Create`/`Recreate` op runs) is silently skipped. On
-    /// the remaining path, resolves the profile UUID inside
+    /// the remaining path, marks the `unread` status `Loading` (design.md
+    /// §2.2.7) before resolving the profile UUID inside
     /// `StateStore::update` (design.md §2.2.3), so a freshly minted UUID
     /// is captured by that update's own dirty flag; registers this
     /// service's runtime capability if its current origin has not
     /// already been granted (design.md §2.2.6; `agent_bridge::capability`'s
     /// module doc explains the identifier scheme and why granting a new
     /// origin never revokes an old one); builds the injection script; and
-    /// finally calls `host.create`. Records the outcome in
-    /// `created`/`create_errors` either way; callers log the error
+    /// finally calls `host.create`. Records the outcome in `created`/the
+    /// `unread` status store either way; callers log the error
     /// themselves, with context-specific wording (startup vs. an edit).
     ///
     /// A capability-registration or injection-script-building failure is
@@ -353,13 +366,15 @@ impl ServiceManager {
             return Ok(());
         }
 
+        self.mark_loading(id);
+
         let uuid_result = ready
             .state
             .update(|state| profile::resolve(&service.profile, &service.id, state));
         let uuid = match uuid_result {
             Ok(uuid) => uuid,
             Err(err) => {
-                ready.create_errors.insert(id.clone(), err.to_string());
+                self.mark_create_failed(id);
                 return Err(err);
             }
         };
@@ -370,7 +385,7 @@ impl ServiceManager {
                 let err = AppError::Webview(format!(
                     "service '{id}' has an opaque origin and cannot be granted a runtime capability: {err}"
                 ));
-                ready.create_errors.insert(id.clone(), err.to_string());
+                self.mark_create_failed(id);
                 return Err(err);
             }
         };
@@ -381,7 +396,7 @@ impl ServiceManager {
             .is_some_and(|origins| origins.contains(&origin));
         if !already_granted {
             if let Err(err) = capability::ensure_capability(&self.app_handle, id, &origin) {
-                ready.create_errors.insert(id.clone(), err.to_string());
+                self.mark_create_failed(id);
                 return Err(err);
             }
             ready
@@ -402,7 +417,7 @@ impl ServiceManager {
                 let err = AppError::Webview(format!(
                     "failed to build agent injection script for service '{id}': {err}"
                 ));
-                ready.create_errors.insert(id.clone(), err.to_string());
+                self.mark_create_failed(id);
                 return Err(err);
             }
         };
@@ -412,13 +427,12 @@ impl ServiceManager {
             url: service.url.clone(),
             profile: uuid,
             init_script,
-            on_page_load: Box::new(|_webview, _payload| {}),
+            on_page_load: self.build_page_load_handler(service.id.clone(), service.url.clone()),
         };
 
         match self.host.create(spec) {
             Ok(()) => {
                 ready.created.insert(id.clone());
-                ready.create_errors.remove(id);
                 // Keep the App Nap assertion in sync with the resident
                 // count right after every successful insert (design.md
                 // §2.2.8; `ServiceManager::app_nap`'s doc comment).
@@ -426,7 +440,7 @@ impl ServiceManager {
                 Ok(())
             }
             Err(err) => {
-                ready.create_errors.insert(id.clone(), err.to_string());
+                self.mark_create_failed(id);
                 Err(err)
             }
         }
@@ -462,6 +476,9 @@ impl ServiceManager {
         // without this early return.
         ready.pending.retain(|pending_id| pending_id != id);
         if !ready.created.contains(id) {
+            // It may still have a status (e.g. `CreateFailed`); the
+            // service is gone, so its status goes too.
+            self.remove_status(id);
             return;
         }
 
@@ -473,11 +490,11 @@ impl ServiceManager {
             return;
         }
         ready.created.remove(id);
-        ready.create_errors.remove(id);
         // Keep the App Nap assertion in sync with the resident count
         // right after every successful removal (design.md §2.2.8;
         // `ServiceManager::app_nap`'s doc comment).
         self.app_nap.sync(ready.created.len());
+        self.remove_status(id);
 
         if ready.active.as_ref() == Some(id) {
             ready.active = None;
@@ -498,7 +515,7 @@ impl ServiceManager {
         let was_active = ready.active.as_ref() == Some(id);
         if let Err(err) = self.host.destroy(id) {
             tracing::error!("failed to destroy service '{id}' before recreating: {err}");
-            ready.create_errors.insert(id.clone(), err.to_string());
+            self.mark_create_failed(id);
             return;
         }
         ready.created.remove(id);
@@ -572,8 +589,9 @@ impl ServiceManager {
     /// On success, the new `Config` always replaces the old one — even
     /// if an individual webview operation below then fails, since the
     /// on-disk edit already happened and cannot be undone here.
-    /// Per-service webview failures are logged and recorded in
-    /// `create_errors` (design.md §5.1); they do not fail this call.
+    /// Per-service webview failures are logged and recorded in the
+    /// `unread` status store as `NeedsAttention(CreateFailed)` (design.md
+    /// §5.1); they do not fail this call.
     /// `services-changed` is emitted at most once, after every op has
     /// run, exactly when `reconcile::diff` says the service list
     /// changed.
@@ -741,20 +759,30 @@ impl ServiceManager {
     /// never fabricates a default `Settings` to fill the gap (project
     /// rule: no fallback defaults) — and `services` is an empty `Vec` in
     /// that case, which is a genuine, not-fabricated value: no service was
-    /// started.
+    /// started. `statuses` is always read from the `unread` status store
+    /// (design.md §2.2.7) regardless of `config_error` — it is a separate
+    /// lock from `inner`, and a service with no entry (e.g. nothing has
+    /// started it yet) is simply absent, which the shell's `Loading`
+    /// badge (design.md §2.2.13) already treats as the no-report-yet case.
     pub async fn snapshot(&self) -> ManagerSnapshot {
         let guard = self.inner.lock().await;
-        match &*guard {
-            ManagerState::Failed(config_error) => ManagerSnapshot {
-                settings: None,
-                services: Vec::new(),
-                config_error: Some(config_error.clone()),
-            },
-            ManagerState::Ready(ready) => ManagerSnapshot {
-                settings: Some(ready.config.settings.clone()),
-                services: ready.config.services.clone(),
-                config_error: None,
-            },
+        let (settings, services, config_error) = match &*guard {
+            ManagerState::Failed(config_error) => (None, Vec::new(), Some(config_error.clone())),
+            ManagerState::Ready(ready) => (
+                Some(ready.config.settings.clone()),
+                ready.config.services.clone(),
+                None,
+            ),
+        };
+        drop(guard);
+
+        let statuses = self.with_status_store(|store| store.statuses().clone());
+
+        ManagerSnapshot {
+            settings,
+            services,
+            config_error,
+            statuses,
         }
     }
 
@@ -933,6 +961,91 @@ impl ServiceManager {
             tracing::warn!("failed to emit {SELECT_SERVICE_EVENT}: {err}");
         }
     }
+
+    /// Runs `f` against the `unread` status store, recovering from a
+    /// poisoned lock (a panic while the previous holder held it) rather
+    /// than panicking here too — every mutation `f` can run is a plain,
+    /// infallible transition, so there is never anything to roll back.
+    fn with_status_store<T>(&self, f: impl FnOnce(&mut StatusStore) -> T) -> T {
+        let mut store = match self.status_store.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        f(&mut store)
+    }
+
+    /// Marks `id`'s `unread` status `Loading` (design.md §2.2.7) — called
+    /// right before a webview creation attempt begins.
+    fn mark_loading(&self, id: &ServiceId) {
+        let changed = self.with_status_store(|store| store.mark_loading(id));
+        emit_status_changed(&self.app_handle, changed);
+    }
+
+    /// Marks `id`'s `unread` status `NeedsAttention(CreateFailed)`
+    /// (design.md §5.1) — called when profile resolution or webview
+    /// creation fails.
+    fn mark_create_failed(&self, id: &ServiceId) {
+        let changed = self.with_status_store(|store| store.mark_create_failed(id));
+        emit_status_changed(&self.app_handle, changed);
+    }
+
+    /// Unregisters `id` from the `unread` status store — called after a
+    /// successful `host.destroy` (design.md §2.2.7: a destroy failure
+    /// leaves the entry in place, matching `created` being left as-is
+    /// too).
+    fn remove_status(&self, id: &ServiceId) {
+        self.with_status_store(|store| store.remove(id));
+    }
+
+    /// Records a validated report's unread count (design.md §2.2.6,
+    /// §2.2.7) — `agent_bridge::report_unread`'s success path calls this
+    /// once `agent_bridge::validate::validate` accepts a report.
+    /// `observedAt` is never consulted (design.md §2.2.6: informational
+    /// only). Ignored if `id` is not a currently registered service (e.g.
+    /// removed between validation and this call).
+    pub fn record_report(&self, id: &ServiceId, count: Option<u32>) {
+        let changed = self.with_status_store(|store| store.record_report(id, count));
+        emit_status_changed(&self.app_handle, changed);
+    }
+
+    /// Builds the `on_page_load` callback for one service's webview
+    /// (design.md §2.2.4, §2.2.7): on `Finished` only, checks the loaded
+    /// page's origin against `service_origin` and records an `OffOrigin`
+    /// transition through the `unread` status store. `host/` itself is
+    /// never touched — this only builds the closure `host.create` is
+    /// given.
+    fn build_page_load_handler(&self, id: ServiceId, service_origin: Url) -> PageLoadHandler {
+        let status_store = self.status_store.clone();
+        let app_handle = self.app_handle.clone();
+        let service_origin = service_origin.origin();
+        Box::new(move |_webview, payload| {
+            if payload.event() != PageLoadEvent::Finished {
+                return;
+            }
+            let changed = {
+                let mut store = match status_store.lock() {
+                    Ok(guard) => guard,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                store.record_page_load(&id, payload.url(), &service_origin)
+            };
+            emit_status_changed(&app_handle, changed);
+        })
+    }
+}
+
+/// Calls [`emit_if_changed`] with a closure that emits [`STATUS_CHANGED_EVENT`]
+/// to the `shell` webview only (design.md §2.2.7) — the one place this
+/// module turns an `unread::StatusStore` mutation's `Option<StatusChanged>`
+/// into an actual Tauri event, shared by every call site above and by
+/// [`ServiceManager::build_page_load_handler`]'s `'static` closure (which
+/// cannot borrow `&self`).
+fn emit_status_changed(app_handle: &AppHandle<Wry>, changed: Option<StatusChanged>) {
+    emit_if_changed(changed, |changed| {
+        if let Err(err) = app_handle.emit_to(SHELL_LABEL, STATUS_CHANGED_EVENT, changed) {
+            tracing::warn!("failed to emit {STATUS_CHANGED_EVENT}: {err}");
+        }
+    });
 }
 
 /// [`ServiceManager::emit_services_changed`]'s payload: `services`, in
@@ -952,13 +1065,14 @@ struct SelectServicePayload<'a> {
     service_id: &'a str,
 }
 
-/// A read-only snapshot of this manager's config, for Task 1.9's
-/// `get_snapshot` command (see [`ServiceManager::snapshot`]'s doc comment
-/// for the failed-startup contract).
+/// A read-only snapshot of this manager's config and `unread` status, for
+/// the `get_snapshot` command (see [`ServiceManager::snapshot`]'s doc
+/// comment for the failed-startup contract).
 pub struct ManagerSnapshot {
     pub settings: Option<Settings>,
     pub services: Vec<ServiceConfig>,
     pub config_error: Option<ConfigError>,
+    pub statuses: HashMap<ServiceId, ServiceStatus>,
 }
 
 /// [`ServiceManager::with_notify_state`]'s return value: a service's
