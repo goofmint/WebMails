@@ -281,6 +281,28 @@ impl<B: ProfileBackend + Send + Sync> WebviewHost for ChildWindowHost<B> {
             return Err(AppError::from(err));
         }
 
+        // Windows only (design.md §2.2.11, Task 4.3): denies the
+        // `NOTIFICATIONS` permission at the WebView2 layer, alongside the
+        // agent's own `Notification` stub — same call
+        // `host::multiwebview::MultiwebviewHost::create` makes, reached
+        // here through `WebviewWindow`'s underlying `Webview` (mirrors
+        // `super::build_main_host`'s own `AsRef::<Webview<Wry>>::as_ref`
+        // use). Only the *dispatch* to `with_webview` can fail here (see
+        // `platform::webview2`'s doc comment); that failure is logged
+        // rather than turned into an `AppError`, since the window itself
+        // was created and shown successfully.
+        #[cfg(windows)]
+        if let Err(err) =
+            crate::platform::webview2::deny_notification_permission(
+                AsRef::<tauri::Webview<Wry>>::as_ref(&window),
+            )
+        {
+            tracing::error!(
+                "webview2: failed to register permission handler for service '{}': {err}",
+                spec.id
+            );
+        }
+
         registry.windows.insert(spec.id, window);
         Ok(())
     }

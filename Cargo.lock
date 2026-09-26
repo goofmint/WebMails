@@ -930,6 +930,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "webview2-com",
 ]
 
 [[package]]

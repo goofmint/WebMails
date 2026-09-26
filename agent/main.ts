@@ -9,6 +9,8 @@ import { createReporter, defaultInvoke } from "./core/report";
 import type { ReportInvoke } from "./core/report";
 import { startLoop } from "./core/loop";
 import { createSameOriginFetch } from "./strategies/fetch";
+import { installNotificationStub } from "./core/notification-stub";
+import type { NotificationConstructorLike } from "./core/notification-stub";
 
 // The slice of `Window` that bootstrapAgent actually needs. The real
 // `window` structurally satisfies this, so `bootstrapAgent(window)` below
@@ -17,6 +19,7 @@ import { createSameOriginFetch } from "./strategies/fetch";
 export interface AgentWindow {
   readonly top: AgentWindow | null;
   __ELUMA__?: ElumaBootstrap;
+  Notification?: NotificationConstructorLike;
   readonly location: { readonly origin: string };
   readonly document: Document;
   readonly fetch: typeof fetch;
@@ -81,10 +84,9 @@ export function bootstrapAgent(win: AgentWindow, deps: BootstrapDeps = {}): void
     return;
   }
 
-  // Step 3: install the Notification stub.
-  // TODO(Task 4.3): replace window.Notification with the stub class
-  // described in design.md §2.2.14 ("Notification stub") here, before any
-  // recipe code runs. Not implemented in this task.
+  // Step 3: install the Notification stub, before any recipe code (or any
+  // page script) runs (design.md §2.2.14 "Notification stub", Task 4.3).
+  installNotificationStub(win);
 
   // Step 4: recipe selection.
   const recipe = matchRecipe(serviceUrl);

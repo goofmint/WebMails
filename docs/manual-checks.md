@@ -153,6 +153,22 @@ Exit criterion (SPEC §16): iCloud fires a native notification with Eluma in the
 
 - [ ] iCloud fires a native notification with Eluma in the background
 
+### Task 4.2 — SP6: page notification suppression [spike, pending owner verification]
+
+`docs/spikes/SP6.md` does not exist yet. This spike (checking whether `window.Notification` exists in WKWebView on remote pages, and whether the Service Worker `showNotification` path is reachable) has not been run or documented by an owner, so Task 4.3's own coverage below assumes — but has not confirmed — that no code path bypasses both the JS stub and the WebView2 permission handler.
+
+- [ ] Run SP6 and write `docs/spikes/SP6.md`
+- [ ] **Open question carried over from SP6:** does a service's Service Worker (if it registers one) have its own path to `showNotification()` that neither `agent/core/notification-stub.ts` (which only replaces `window.Notification` on the main-frame `window`) nor `platform/webview2.rs`'s `PermissionRequested` denial necessarily reaches? This needs the same real-service verification as the item below, specifically with a service that registers a Service Worker.
+
+### Task 4.3 — Notification stub and WebView2 permission handler [manual — owner]
+
+For each item, record date, platform and result (pass/fail, with notes) before checking it off.
+
+- [ ] Gmail shows no page-originated notification (the OS never shows a notification triggered directly by `mail.google.com`'s own page script, as opposed to one Eluma's own notification dispatcher — Task 4.5/4.6, not yet implemented — produces)
+- [ ] Same check against iCloud Mail and Outlook (the other M2 recipes), in case any of them use a notification path Gmail does not
+- [ ] Windows 11: with a service webview open, confirm in DevTools that `window.Notification.permission === 'denied'` and that `new Notification(...)` throws, **and** that the WebView2 permission handler (`platform/webview2.rs`) is also in effect — e.g. temporarily disable the JS stub (or test against a page that clears it) and confirm the OS still never shows a page-originated notification, showing the two layers are independent defenses, not one masking a gap in the other
+- [ ] macOS: confirm the same `window.Notification` stub behaviour in DevTools (no WebView2/`PermissionRequested` layer exists on macOS — design.md §2.2.11 scopes that handler to Windows only, so WKWebView relies on the JS stub alone)
+
 ## M5 — Recipes
 
 Exit criterion (SPEC §16): a contributor adds Fastmail by adding one recipe module, without touching Rust.
