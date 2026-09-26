@@ -226,8 +226,7 @@ pub async fn set_icon_override(
 }
 
 /// Re-resolves `id`'s icon from scratch (design.md §2.2.12: input `{ id
-/// }`, output `—`): deletes the current cache so resolution cannot skip
-/// re-fetching, then resolves in the background using `id`'s currently
+/// }`, output `—`): keeps the current cached icon and resolves in the background using `id`'s currently
 /// configured icon source and last-known `iconCandidates` — see
 /// [`set_icon_override`]'s doc comment for the shared resolve/emit path.
 #[tauri::command]
@@ -240,7 +239,8 @@ pub async fn refresh_icon(
         .icon_source_for(&id)
         .await
         .ok_or_else(|| AppError::Config(format!("service '{id}' does not exist")))?;
-    manager.clear_icon_cache(&id);
+    // The current icon stays in place while resolution runs; a successful
+    // resolution replaces it, and a failed one leaves it as it was.
     ServiceManager::spawn_icon_resolve(&manager, id, icon_source);
     Ok(())
 }

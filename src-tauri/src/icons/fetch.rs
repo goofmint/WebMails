@@ -85,6 +85,9 @@ impl ReqwestIconFetcher {
             .timeout(TIMEOUT)
             .redirect(redirect_policy())
             .dns_resolver(Arc::new(GuardedResolver))
+            // An environment proxy would resolve the destination itself and
+            // bypass GuardedResolver's address checks.
+            .no_proxy()
             .build()
             .map_err(|err| AppError::Icon(format!("could not build icon-fetch client: {err}")))?;
         Ok(ReqwestIconFetcher { client })
