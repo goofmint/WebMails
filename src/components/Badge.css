@@ -1,0 +1,42 @@
+/* Task 2.10 — sidebar status indicators (design.md §2.2.13, §11.3).
+   Absolutely positioned at the top-right of the icon that renders it; that
+   ancestor (`.service-icon`) must be `position: relative` (see
+   sidebar.css), and every rule here is sized to fit inside a 64px icon. */
+
+.badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+.badge--pill {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #d33;
+  color: #fff;
+  font-size: 10px;
+  font-weight: bold;
+  line-height: 16px;
+  text-align: center;
+}
+
+.badge--stale {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: transparent;
+  border: 2px solid #999;
+}
+
+.badge--attention {
+  width: 16px;
+  height: 16px;
+  font-size: 12px;
+  line-height: 16px;
+  text-align: center;
+  color: #d33;
+}

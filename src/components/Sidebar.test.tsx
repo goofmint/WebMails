@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { Sidebar } from "./Sidebar";
 import { ShellStoreProvider } from "../store/ShellStoreProvider";
 import { createMockShellIpc } from "../test/mockShellIpc";
@@ -115,6 +115,38 @@ describe("Sidebar", () => {
     expect(screen.getByText("invalid scheme")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Gmail" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Settings" })).toBeInTheDocument();
+  });
+
+  it("renders and updates a service's badge when a status-changed event fires", async () => {
+    const ipc = renderSidebar();
+    const gmail = await screen.findByRole("button", { name: "Gmail" });
+
+    expect(within(gmail).queryByLabelText(/unread/)).not.toBeInTheDocument();
+
+    ipc.emitStatusChanged("gmail", { kind: "ok", count: 3 });
+
+    await waitFor(() => {
+      expect(within(gmail).getByLabelText("3 unread")).toHaveTextContent("3");
+    });
+
+    ipc.emitStatusChanged("gmail", { kind: "ok", count: 1000 });
+
+    await waitFor(() => {
+      expect(within(gmail).getByLabelText("1000 unread")).toHaveTextContent("999+");
+    });
+  });
+
+  it("renders no badge at all when settings.badge_sidebar is false", async () => {
+    const { settings } = snapshot();
+    if (settings === null) throw new Error("expected non-null settings");
+    const ipc = renderSidebar(snapshot({ settings: { ...settings, badge_sidebar: false } }));
+    const gmail = await screen.findByRole("button", { name: "Gmail" });
+
+    ipc.emitStatusChanged("gmail", { kind: "ok", count: 3 });
+
+    await waitFor(() => {
+      expect(within(gmail).queryByLabelText(/unread/)).not.toBeInTheDocument();
+    });
   });
 
   it("calls openSettings from both the add and settings buttons", async () => {

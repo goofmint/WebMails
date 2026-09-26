@@ -50,6 +50,8 @@ body {
   background: transparent;
   cursor: pointer;
   padding: 0;
+  /* Anchors its `Badge` (Task 2.10; Badge.css), which is `position: absolute`. */
+  position: relative;
 }
 
 .service-icon--selected {

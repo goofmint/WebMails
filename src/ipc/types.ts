@@ -61,8 +61,9 @@ export interface ConfigErrorInfo {
  * `get_snapshot`'s `statuses` map is always empty until Task 2.3 gives it
  * a real value type (`commands/snapshot.rs`'s `BTreeMap<ServiceId, ()>`
  * comment), so this type only fixes the *shape* the wire will eventually
- * carry — it has no behaviour of its own in this task (badges are Task
- * 2.10).
+ * carry. Rendered by `src/components/Badge.tsx` (Task 2.10; design.md
+ * §2.2.13, §11.3), fed from `Snapshot.statuses` and kept current by
+ * `onStatusChanged` events (`src/store/shellStore.ts`).
  */
 export interface ServiceStatus {
   readonly kind: "loading" | "ok" | "needsAttention" | "stale";

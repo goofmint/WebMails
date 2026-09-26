@@ -183,6 +183,28 @@ describe("createShellStore", () => {
     expect(ipc.reorderServices).not.toHaveBeenCalled();
   });
 
+  it("applies a status-changed event into snapshot.statuses, keyed by serviceId", async () => {
+    const ipc = createMockShellIpc(snapshot());
+    const store = createShellStore(ipc);
+    store.start();
+    await vi.waitFor(() => expect(store.getState().status).toBe("ready"));
+
+    ipc.emitStatusChanged("gmail", { kind: "ok", count: 3 });
+
+    const state = store.getState();
+    if (state.status !== "ready") throw new Error("expected ready state");
+    expect(state.snapshot.statuses).toEqual({ gmail: { kind: "ok", count: 3 } });
+
+    ipc.emitStatusChanged("icloud", { kind: "stale" });
+
+    const nextState = store.getState();
+    if (nextState.status !== "ready") throw new Error("expected ready state");
+    expect(nextState.snapshot.statuses).toEqual({
+      gmail: { kind: "ok", count: 3 },
+      icloud: { kind: "stale" },
+    });
+  });
+
   it("stop() unsubscribes from events", async () => {
     const ipc = createMockShellIpc(snapshot());
     const store = createShellStore(ipc);

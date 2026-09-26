@@ -164,6 +164,17 @@ export function createShellStore(ipc: ShellIpc): ShellStore {
           setState({ ...state, selectedId: id });
         }
       }),
+      ipc.onStatusChanged(({ serviceId, status }) => {
+        if (state.status === "ready") {
+          setState({
+            ...state,
+            snapshot: {
+              ...state.snapshot,
+              statuses: { ...state.snapshot.statuses, [serviceId]: status },
+            },
+          });
+        }
+      }),
     ]);
 
     // Retain every registration that succeeded even if another one
