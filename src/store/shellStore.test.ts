@@ -183,6 +183,28 @@ describe("createShellStore", () => {
     expect(ipc.reorderServices).not.toHaveBeenCalled();
   });
 
+  it("applies a status-changed event into snapshot.statuses, keyed by serviceId", async () => {
+    const ipc = createMockShellIpc(snapshot());
+    const store = createShellStore(ipc);
+    store.start();
+    await vi.waitFor(() => expect(store.getState().status).toBe("ready"));
+
+    ipc.emitStatusChanged("gmail", { kind: "ok", count: 3 });
+
+    const state = store.getState();
+    if (state.status !== "ready") throw new Error("expected ready state");
+    expect(state.snapshot.statuses).toEqual({ gmail: { kind: "ok", count: 3 } });
+
+    ipc.emitStatusChanged("icloud", { kind: "stale" });
+
+    const nextState = store.getState();
+    if (nextState.status !== "ready") throw new Error("expected ready state");
+    expect(nextState.snapshot.statuses).toEqual({
+      gmail: { kind: "ok", count: 3 },
+      icloud: { kind: "stale" },
+    });
+  });
+
   it("stop() unsubscribes from events", async () => {
     const ipc = createMockShellIpc(snapshot());
     const store = createShellStore(ipc);
@@ -471,6 +493,84 @@ describe("createShellStore", () => {
     expect(state.selectedId).toBe("icloud");
     // ...while the rest of that snapshot is still applied.
     expect(state.snapshot.services).toHaveLength(1);
+  });
+
+  it("keeps a newer status-changed event over a pending refresh's older statuses", async () => {
+    const ipc = createMockShellIpc(snapshot());
+    const store = createShellStore(ipc);
+    store.start();
+    await vi.waitFor(() => expect(store.getState().status).toBe("ready"));
+
+    const pendingSnapshot = createDeferred<Snapshot>();
+    ipc.getSnapshot.mockReturnValueOnce(pendingSnapshot.promise);
+    ipc.emitServicesChanged(); // starts a refresh() whose getSnapshot is now pending
+
+    // A status-changed event arrives from the backend while that refresh
+    // is still in flight.
+    ipc.emitStatusChanged("gmail", { kind: "ok", count: 3 });
+    const midFlight = store.getState();
+    if (midFlight.status !== "ready") throw new Error("expected ready state");
+    expect(midFlight.snapshot.statuses).toEqual({ gmail: { kind: "ok", count: 3 } });
+
+    // The pending refresh's snapshot resolves with no statuses at all — the
+    // backend's own read predates the event above.
+    pendingSnapshot.resolve(snapshot({ services: [service({ id: "outlook" })] }));
+    await pendingSnapshot.promise;
+
+    const state = store.getState();
+    if (state.status !== "ready") throw new Error("expected ready state");
+    // The status-changed event survives the older snapshot...
+    expect(state.snapshot.statuses).toEqual({ gmail: { kind: "ok", count: 3 } });
+    // ...while the rest of that snapshot is still applied.
+    expect(state.snapshot.services).toHaveLength(1);
+  });
+
+  it("keeps a status-changed event that arrived before the store's first snapshot", async () => {
+    const ipc = createMockShellIpc(snapshot());
+    const store = createShellStore(ipc);
+
+    const initialSnapshot = createDeferred<Snapshot>();
+    ipc.getSnapshot.mockReturnValueOnce(initialSnapshot.promise);
+
+    store.start();
+    await vi.waitFor(() => expect(ipc.getSnapshot).toHaveBeenCalledTimes(1));
+    expect(store.getState()).toEqual({ status: "loading" });
+
+    // A status-changed event arrives before the store's very first snapshot
+    // — `state` is still "loading", so there is no `snapshot.statuses` to
+    // apply it to directly yet.
+    ipc.emitStatusChanged("gmail", { kind: "ok", count: 3 });
+    expect(store.getState()).toEqual({ status: "loading" });
+
+    initialSnapshot.resolve(snapshot());
+    await initialSnapshot.promise;
+
+    const state = store.getState();
+    if (state.status !== "ready") throw new Error("expected ready state");
+    expect(state.snapshot.statuses).toEqual({ gmail: { kind: "ok", count: 3 } });
+  });
+
+  it("does not keep a stale status-changed event across a later refresh", async () => {
+    const ipc = createMockShellIpc(snapshot());
+    const store = createShellStore(ipc);
+    store.start();
+    await vi.waitFor(() => expect(store.getState().status).toBe("ready"));
+
+    ipc.emitStatusChanged("gmail", { kind: "ok", count: 3 });
+    const afterEvent = store.getState();
+    if (afterEvent.status !== "ready") throw new Error("expected ready state");
+    expect(afterEvent.snapshot.statuses).toEqual({ gmail: { kind: "ok", count: 3 } });
+
+    // A later refresh's own snapshot now reports a different status for the
+    // same service — that must win, not the earlier (already-applied) event.
+    ipc.getSnapshot.mockResolvedValueOnce(snapshot({ statuses: { gmail: { kind: "stale" } } }));
+    ipc.emitServicesChanged();
+
+    await vi.waitFor(() => {
+      const state = store.getState();
+      if (state.status !== "ready") throw new Error("expected ready state");
+      expect(state.snapshot.statuses).toEqual({ gmail: { kind: "stale" } });
+    });
   });
 
   it("keeps a select-service choice that arrived before the store's first snapshot", async () => {

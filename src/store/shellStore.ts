@@ -8,7 +8,7 @@
  * are safe to compare with `===`.
  */
 
-import type { ShellIpc, ServiceConfig, Snapshot } from "../ipc";
+import type { ShellIpc, ServiceConfig, ServiceStatus, Snapshot } from "../ipc";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
 export type ShellState =
@@ -48,6 +48,27 @@ function reorderServicesByIds(
   return reordered;
 }
 
+/**
+ * The entries of `after` that are new since `before` — added or changed —
+ * comparing each service id's status by reference. Safe because
+ * `statusOverrides` is only ever replaced wholesale (never mutated): an
+ * id whose status is unchanged since `before` was captured still points
+ * at the exact same object, so reference equality alone tells "recorded
+ * after `before`" apart from "already there".
+ */
+function overridesSince(
+  before: Readonly<Record<string, ServiceStatus>>,
+  after: Readonly<Record<string, ServiceStatus>>,
+): Readonly<Record<string, ServiceStatus>> {
+  const result: Record<string, ServiceStatus> = {};
+  for (const [serviceId, status] of Object.entries(after)) {
+    if (before[serviceId] !== status) {
+      result[serviceId] = status;
+    }
+  }
+  return result;
+}
+
 export function createShellStore(ipc: ShellIpc): ShellStore {
   let state: ShellState = { status: "loading" };
   const listeners = new Set<() => void>();
@@ -78,6 +99,16 @@ export function createShellStore(ipc: ShellIpc): ShellStore {
   // no `selectedId` field to stash it in, and it must still survive until
   // the snapshot that follows.
   let latestSelectedId: string | null = null;
+  // Every status-changed event's payload, by service id — kept up to date
+  // independently of `state`, alongside the direct-to-state update
+  // `onStatusChanged` below already does. A snapshot fetch's own
+  // `statuses` reflects the backend's state as of whenever it read it,
+  // which can be older than a status-changed event this store received
+  // while that fetch was in flight; refresh() diffs this against the
+  // value it captured at its own start (`overridesSince`) to find and
+  // re-apply exactly those newer events on top of the fetched snapshot,
+  // so they can't be clobbered by it.
+  let statusOverrides: Readonly<Record<string, ServiceStatus>> = {};
 
   function getState(): ShellState {
     return state;
@@ -129,6 +160,11 @@ export function createShellStore(ipc: ShellIpc): ShellStore {
     // happened in the meantime and, if so, keep it instead of applying this
     // now-stale response's `activeServiceId`.
     const selectionSeqAtStart = selectionSeq;
+    // Snapshotted so that, once the fetch below resolves, `overridesSince`
+    // can tell which (if any) status-changed events arrived after this
+    // fetch began — those must survive being applied on top of the
+    // snapshot's own (possibly older) `statuses`, below.
+    const statusOverridesAtStart = statusOverrides;
     try {
       const snapshot = await ipc.getSnapshot();
       if (isStaleRefresh(gen, seq)) {
@@ -143,7 +179,14 @@ export function createShellStore(ipc: ShellIpc): ShellStore {
       // the snapshot (services/statuses/etc.) is applied.
       const keepNewerSelection = selectionSeq !== selectionSeqAtStart;
       const selectedId = keepNewerSelection ? latestSelectedId : snapshot.activeServiceId;
-      setState({ status: "ready", snapshot, selectedId });
+      // Same reasoning as `keepNewerSelection`, for statuses: any
+      // status-changed event received after this fetch began is newer
+      // than what it returned, so it must win over `snapshot.statuses`
+      // rather than be silently overwritten by it — reusing the same
+      // per-service assignment `onStatusChanged` itself uses below.
+      const newerStatuses = overridesSince(statusOverridesAtStart, statusOverrides);
+      const statuses = { ...snapshot.statuses, ...newerStatuses };
+      setState({ status: "ready", snapshot: { ...snapshot, statuses }, selectedId });
     } catch (caughtError) {
       if (isStaleRefresh(gen, seq)) {
         return;
@@ -162,6 +205,23 @@ export function createShellStore(ipc: ShellIpc): ShellStore {
         latestSelectedId = id;
         if (state.status === "ready") {
           setState({ ...state, selectedId: id });
+        }
+      }),
+      ipc.onStatusChanged(({ serviceId, status }) => {
+        // Recorded regardless of `state.status`, so a refresh() in flight
+        // (or one that starts before this store ever reaches "ready", e.g.
+        // during the very first bootstrap fetch) can still recover this
+        // event via `overridesSince` even though there was no "ready"
+        // state here to apply it to directly, below.
+        statusOverrides = { ...statusOverrides, [serviceId]: status };
+        if (state.status === "ready") {
+          setState({
+            ...state,
+            snapshot: {
+              ...state.snapshot,
+              statuses: { ...state.snapshot.statuses, [serviceId]: status },
+            },
+          });
         }
       }),
     ]);

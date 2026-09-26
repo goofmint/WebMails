@@ -32,6 +32,10 @@ export function Sidebar() {
 
   const { snapshot, selectedId } = state;
   const { configError } = snapshot;
+  // `settings` is only ever `null` alongside a `configError` (design.md
+  // §2.2.12's comment on `Snapshot`), and that case already returned above —
+  // so by this point it is always present.
+  const badgesEnabled = snapshot.settings !== null && snapshot.settings.badge_sidebar;
 
   if (configError !== undefined) {
     return (
@@ -82,6 +86,8 @@ export function Sidebar() {
               size={snapshot.sidebarWidth}
               draggable
               isDropTarget={dropTargetId === service.id}
+              status={snapshot.statuses[service.id]}
+              badgesEnabled={badgesEnabled}
               onSelect={(id) => {
                 store.select(id);
               }}

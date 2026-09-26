@@ -36,9 +36,9 @@ export async function onSelectService(
 /**
  * `status-changed` (design.md §3.2: `{ kind, count?, reason? }` is the
  * `ServiceStatus` shape; the event itself pairs it with the service id).
- * Not emitted by any Rust code yet (Task 2.3), and not consumed by this
- * task's store (badges are Task 2.10) — declared now so `ShellIpc` already
- * matches design.md §2.2.12's full event list.
+ * Not emitted by any Rust code yet (Task 2.3), but consumed by the shell
+ * store from Task 2.10 on: it merges each event into `snapshot.statuses`,
+ * keyed by `serviceId`, so the sidebar's `Badge`s update live.
  */
 export async function onStatusChanged(
   callback: (payload: { readonly serviceId: string; readonly status: ServiceStatus }) => void,
