@@ -303,16 +303,28 @@ impl IconService {
         true
     }
 
-    /// Allocates a new generation for `id` — always strictly greater than
-    /// every generation handed out for it before, even a since-cleared
-    /// one (design.md §2.2.10) — and records it as the one currently
-    /// resolving. Called once, at the very start of every [`Self::resolve`]
-    /// call, regardless of which entry point triggered it. Returns the
-    /// generation this call now owns.
-    async fn begin_generation(&self, id: &ServiceId) -> u64 {
-        let mut guard = self.inner.lock().await;
+    /// Allocates a new generation number for `id`, strictly greater than
+    /// every one handed out for it before — even a since-cleared or
+    /// since-superseded one (design.md §2.2.10) — so a generation is never
+    /// reused. Must be called with `guard` already held. Shared by
+    /// [`Self::begin_generation`] (which also records the new generation as
+    /// the one currently resolving) and [`Self::forget`] (which only needs
+    /// to invalidate whatever generation is currently in flight, without
+    /// starting a resolution of its own).
+    fn bump_generation(guard: &mut State, id: &ServiceId) -> u64 {
         let generation = guard.next_generation.get(id).copied().unwrap_or(0) + 1;
         guard.next_generation.insert(id.clone(), generation);
+        generation
+    }
+
+    /// Allocates a new generation for `id` (via [`Self::bump_generation`])
+    /// and records it as the one currently resolving. Called once, at the
+    /// very start of every [`Self::resolve`] call, regardless of which
+    /// entry point triggered it. Returns the generation this call now
+    /// owns.
+    async fn begin_generation(&self, id: &ServiceId) -> u64 {
+        let mut guard = self.inner.lock().await;
+        let generation = Self::bump_generation(&mut guard, id);
         guard.resolving.insert(id.clone(), generation);
         generation
     }
@@ -347,7 +359,21 @@ impl IconService {
     /// Removes every on-disk trace of `id`'s icon — the cached PNG, an
     /// installed file override, and its remembered candidates (design.md
     /// §2.2.10; `ServiceManager::remove_service`'s cleanup).
+    ///
+    /// Bumps `id`'s generation and clears its candidates/resolving state
+    /// under the lock *before* touching the filesystem: a resolution
+    /// already in flight for `id` (started before this call) captured an
+    /// older generation, so bumping first makes that generation stale —
+    /// its eventual [`Self::write_cache`] call will see the mismatch and
+    /// discard its result — before [`Self::clear_cache`] below removes the
+    /// file that write would otherwise have been able to recreate.
     pub async fn forget(&self, id: &ServiceId) {
+        {
+            let mut guard = self.inner.lock().await;
+            Self::bump_generation(&mut guard, id);
+            guard.candidates.remove(id);
+            guard.resolving.remove(id);
+        }
         self.clear_cache(id);
         let override_path = paths::icon_override_file(&self.data_dir, id);
         match std::fs::remove_file(&override_path) {
@@ -357,9 +383,6 @@ impl IconService {
                 tracing::warn!("failed to remove icon override file for '{id}': {err}");
             }
         }
-        let mut guard = self.inner.lock().await;
-        guard.candidates.remove(id);
-        guard.resolving.remove(id);
     }
 
     /// Reads `source_path` (an arbitrary, user-chosen absolute path),
@@ -443,30 +466,41 @@ impl IconService {
         self.resolve(id, override_source).await
     }
 
-    /// Writes `png` to `id`'s cache path via a temp file renamed into
-    /// place, creating `{data_dir}/icons` first if needed — but only if
-    /// `generation` is still the latest one handed out for `id` (design.md
-    /// §2.2.10): if a newer resolution has since begun, this one has been
-    /// superseded and its result is discarded without touching the
-    /// filesystem. Returns whether it actually wrote.
+    /// Writes `png` to a generation-specific temp file, then — while
+    /// holding the lock across both the check and the rename, so no other
+    /// call can allocate a newer generation or run `forget` in between —
+    /// promotes it to `id`'s cache path only if `generation` is still the
+    /// latest one handed out for `id` (design.md §2.2.10). If it is not (a
+    /// newer resolution has since begun, or `forget` has invalidated it),
+    /// this resolution has been superseded: its temp file is deleted and
+    /// the cache is left untouched. Returns whether it actually wrote.
+    ///
+    /// The temp file's name is unique per generation (`{id}.{generation}.
+    /// png.tmp`, not a single shared `{id}.png.tmp`) so two resolutions for
+    /// the same `id` — one about to be superseded, one about to become
+    /// current — can never write over each other's temp file before the
+    /// locked check below decides which one gets to be renamed into place.
     async fn write_cache(
         &self,
         id: &ServiceId,
         generation: u64,
         png: &[u8],
     ) -> std::io::Result<bool> {
-        {
-            let guard = self.inner.lock().await;
-            if guard.next_generation.get(id) != Some(&generation) {
-                return Ok(false);
-            }
-        }
         let dir = paths::icons_dir(&self.data_dir);
         std::fs::create_dir_all(&dir)?;
-        let final_path = paths::icon_cache_file(&self.data_dir, id);
-        let tmp_path = dir.join(format!("{id}.png.tmp"));
+        let tmp_path = dir.join(format!("{id}.{generation}.png.tmp"));
         std::fs::write(&tmp_path, png)?;
-        std::fs::rename(&tmp_path, &final_path)?;
+
+        let guard = self.inner.lock().await;
+        if guard.next_generation.get(id) != Some(&generation) {
+            drop(guard);
+            let _ = std::fs::remove_file(&tmp_path);
+            return Ok(false);
+        }
+        let final_path = paths::icon_cache_file(&self.data_dir, id);
+        let result = std::fs::rename(&tmp_path, &final_path);
+        drop(guard);
+        result?;
         Ok(true)
     }
 }
@@ -1100,6 +1134,110 @@ mod tests {
         assert_eq!(
             after_cached.path, fast_cached.path,
             "the cache path is unchanged"
+        );
+    }
+
+    /// Encodes a distinct single-colour fixture PNG from
+    /// [`one_pixel_png`]'s, so a test can tell "the stale write's bytes"
+    /// apart from "the current write's bytes" by content, not just by
+    /// whether a write happened at all.
+    fn other_pixel_png() -> Vec<u8> {
+        use image::{Rgba, RgbaImage};
+        let img = RgbaImage::from_pixel(4, 4, Rgba([9, 9, 9, 255]));
+        let mut out = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .expect("encode fixture");
+        out
+    }
+
+    #[tokio::test]
+    async fn write_cache_does_not_let_a_late_stale_write_replace_an_existing_newer_cache() {
+        let fetcher = FakeFetcher::new(vec![]);
+        let (service, dir) = service(fetcher);
+        let service_id = id("xi");
+
+        let stale_generation = service.begin_generation(&service_id).await;
+        let current_generation = service.begin_generation(&service_id).await;
+
+        // The current generation writes and commits first...
+        let current_bytes = one_pixel_png();
+        assert!(service
+            .write_cache(&service_id, current_generation, &current_bytes)
+            .await
+            .expect("write_cache should not fail"));
+
+        // ...and only then does the stale generation's write (with
+        // distinct bytes) finally arrive. It must be discarded, its own
+        // temp file cleaned up, and the already-written newer cache left
+        // byte-for-byte untouched.
+        let stale_bytes = other_pixel_png();
+        let wrote = service
+            .write_cache(&service_id, stale_generation, &stale_bytes)
+            .await
+            .expect("write_cache should not fail");
+        assert!(!wrote, "a stale generation must not report a change");
+
+        let cached = service
+            .cached_icon(&service_id)
+            .expect("cache must still be present");
+        let on_disk = std::fs::read(&cached.path).expect("read cached file");
+        assert_eq!(
+            on_disk, current_bytes,
+            "the newer cache must survive untouched"
+        );
+
+        let leftover_tmp = dir
+            .path()
+            .join("icons")
+            .join(format!("{service_id}.{stale_generation}.png.tmp"));
+        assert!(
+            !leftover_tmp.exists(),
+            "the stale generation's own temp file must be cleaned up"
+        );
+    }
+
+    #[tokio::test]
+    async fn forget_during_an_in_flight_resolve_leaves_no_cache() {
+        let slow_url = "https://example.com/slow.png";
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let fetcher = Arc::new(GatedFetcher {
+            gated_url: slow_url.to_string(),
+            gated_bytes: one_pixel_png(),
+            gate: StdMutex::new(Some(release_rx)),
+            others: StdMutex::new(BTreeMap::new()),
+        });
+        let dir = tempfile::tempdir().expect("tempdir");
+        let service = Arc::new(IconService::with_fetcher(dir.path().to_path_buf(), fetcher));
+        let service_id = id("pi");
+
+        service
+            .record_candidates(service_id.clone(), vec![url(slow_url)])
+            .await;
+        let resolve_task = tokio::spawn({
+            let service = service.clone();
+            let service_id = service_id.clone();
+            async move { service.resolve(service_id, IconSource::Favicon).await }
+        });
+
+        // Give the resolution a chance to allocate its generation and
+        // reach the gated fetch before `forget` runs.
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+
+        service.forget(&service_id).await;
+
+        // Now let the in-flight resolution finish: its write must be
+        // discarded (its generation was invalidated by `forget`), so it
+        // can never recreate the cache `forget` just removed.
+        release_tx.send(()).expect("release the gated fetch");
+        let changed = resolve_task.await.expect("resolve task did not panic");
+        assert!(
+            !changed,
+            "an invalidated resolution must not report a cache change"
+        );
+        assert!(
+            service.cached_icon(&service_id).is_none(),
+            "forget must leave no cache, even after the in-flight resolution finishes"
         );
     }
 }
