@@ -20,7 +20,18 @@ use crate::config::ServiceId;
 use crate::services::ServiceManager;
 
 pub use dto::UnreadReportDto;
-pub use validate::ReportError;
+pub use validate::{ReportError, ValidMessageRef, ValidReport};
+
+// Crate-visible only (not part of this crate's public API): task 4.4's
+// `notify::diff` tests build `ValidReport` fixtures through the real
+// `validate()` function — there is deliberately no public constructor
+// for `ValidReport` itself — which needs `MessageRefDto` to fill in
+// `UnreadReportDto::messages`. Only that (`#[cfg(test)]`) code uses
+// these outside this module, so a non-test build sees them as unused.
+#[allow(unused_imports)]
+pub(crate) use dto::MessageRefDto;
+#[allow(unused_imports)]
+pub(crate) use validate::validate;
 
 /// Validates and (for now) only logs an unread report from a service's
 /// injected agent (design.md §2.2.6).

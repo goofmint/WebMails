@@ -4,6 +4,7 @@ mod commands;
 pub mod config;
 pub mod error;
 pub mod host;
+mod notify;
 pub mod paths;
 mod platform;
 pub mod profile;
