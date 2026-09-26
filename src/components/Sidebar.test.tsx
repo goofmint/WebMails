@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { Sidebar } from "./Sidebar";
 import { ShellStoreProvider } from "../store/ShellStoreProvider";
 import { createMockShellIpc } from "../test/mockShellIpc";
@@ -142,11 +142,11 @@ describe("Sidebar", () => {
     const ipc = renderSidebar(snapshot({ settings: { ...settings, badge_sidebar: false } }));
     const gmail = await screen.findByRole("button", { name: "Gmail" });
 
-    ipc.emitStatusChanged("gmail", { kind: "ok", count: 3 });
-
-    await waitFor(() => {
-      expect(within(gmail).queryByLabelText(/unread/)).not.toBeInTheDocument();
+    act(() => {
+      ipc.emitStatusChanged("gmail", { kind: "ok", count: 3 });
     });
+
+    expect(within(gmail).queryByLabelText(/unread/)).not.toBeInTheDocument();
   });
 
   it("calls openSettings from both the add and settings buttons", async () => {

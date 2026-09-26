@@ -13,6 +13,7 @@
  */
 
 import type { ServiceStatus } from "../ipc";
+import { badgeLabel } from "./badgeLabel";
 import "./Badge.css";
 
 /** The single place the sidebar's unread-count pill cap is defined. */
@@ -30,20 +31,18 @@ function formatPillText(count: number): string {
 }
 
 export function Badge({ status, enabled }: BadgeProps) {
-  if (!enabled) {
+  const label = badgeLabel(status, enabled);
+  if (label === null) {
     return null;
   }
 
   switch (status.kind) {
-    case "loading":
-      return null;
-
     case "ok": {
       const { count } = status;
       if (count === undefined || count <= 0) {
+        // Unreachable: badgeLabel() already returned null for this case.
         return null;
       }
-      const label = `${count} unread`;
       return (
         <span className="badge badge--pill" aria-label={label} title={label}>
           {formatPillText(count)}
@@ -51,18 +50,18 @@ export function Badge({ status, enabled }: BadgeProps) {
       );
     }
 
-    case "stale": {
-      const label = "Not updating";
+    case "stale":
       return <span className="badge badge--stale" aria-label={label} title={label} />;
-    }
 
-    case "needsAttention": {
-      const label = "Needs attention";
+    case "needsAttention":
       return (
         <span className="badge badge--attention" aria-label={label} title={label}>
           ⚠
         </span>
       );
-    }
+
+    case "loading":
+      // Unreachable: badgeLabel() already returned null for this case.
+      return null;
   }
 }

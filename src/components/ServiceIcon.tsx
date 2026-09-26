@@ -9,6 +9,7 @@
 import { useState, type DragEvent } from "react";
 import type { ServiceConfig, ServiceStatus } from "../ipc";
 import { Badge } from "./Badge";
+import { badgeLabel } from "./badgeLabel";
 
 export interface ServiceIconProps {
   readonly service: ServiceConfig;
@@ -46,6 +47,11 @@ export function ServiceIcon({
   const [imageFailed, setImageFailed] = useState(false);
   const showImage = service.icon.source === "url" && !imageFailed;
   const initial = service.name.charAt(0).toUpperCase();
+  // Same label Badge itself would render (or `null` if Badge renders
+  // nothing) — so the accessible name only mentions status when the Badge
+  // is actually visible, and never drifts from what it says.
+  const statusLabel = status === undefined ? null : badgeLabel(status, badgesEnabled);
+  const accessibleName = statusLabel === null ? service.name : `${service.name}, ${statusLabel}`;
 
   const classNames = [
     "service-icon",
@@ -76,7 +82,7 @@ export function ServiceIcon({
       className={classNames}
       style={{ width: size, height: size }}
       title={service.name}
-      aria-label={service.name}
+      aria-label={accessibleName}
       aria-current={selected ? "true" : undefined}
       draggable={draggable}
       onClick={() => {
