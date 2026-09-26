@@ -9,6 +9,7 @@
  */
 
 import type { ShellIpc, ServiceConfig, Snapshot } from "../ipc";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 
 export type ShellState =
   | { readonly status: "loading" }
@@ -52,7 +53,12 @@ export function createShellStore(ipc: ShellIpc): ShellStore {
   const listeners = new Set<() => void>();
   let unlistenFns: (() => void)[] = [];
   let started = false;
-  let disposed = false;
+  // Bumped by every start()/stop(), and captured by each bootstrap() call —
+  // lets a bootstrap that is still in flight when the store is stopped (or
+  // stopped and restarted before it resolves) recognize it's stale once its
+  // subscriptions come back, instead of clobbering a later generation's
+  // `unlistenFns` or leaking listeners the store no longer owns.
+  let generation = 0;
 
   function getState(): ShellState {
     return state;
@@ -87,32 +93,54 @@ export function createShellStore(ipc: ShellIpc): ShellStore {
     }
   }
 
-  async function bootstrap(): Promise<void> {
-    try {
-      const subscriptions = await Promise.all([
-        ipc.onServicesChanged(() => {
-          void refresh();
-        }),
-        ipc.onSelectService(({ id }) => {
-          if (state.status === "ready") {
-            setState({ ...state, selectedId: id });
-          }
-        }),
-      ]);
-
-      if (disposed) {
-        for (const unlisten of subscriptions) {
-          unlisten();
+  async function bootstrap(gen: number): Promise<void> {
+    const results = await Promise.allSettled([
+      ipc.onServicesChanged(() => {
+        void refresh();
+      }),
+      ipc.onSelectService(({ id }) => {
+        if (state.status === "ready") {
+          setState({ ...state, selectedId: id });
         }
-        return;
-      }
+      }),
+    ]);
 
-      unlistenFns = subscriptions;
-    } catch (caughtError) {
-      setState({ status: "error", message: errorMessage(caughtError) });
+    // Retain every registration that succeeded even if another one
+    // rejected, so a partial failure below can still unlisten them instead
+    // of leaking a listener the backend registered but this store lost
+    // track of.
+    const fulfilledUnlistens: UnlistenFn[] = [];
+    let rejectedError: unknown;
+    let hasRejection = false;
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        fulfilledUnlistens.push(result.value);
+      } else if (!hasRejection) {
+        hasRejection = true;
+        rejectedError = result.reason;
+      }
+    }
+
+    if (gen !== generation || !started) {
+      // A newer generation has started (or the store was stopped) since
+      // this bootstrap began — unlisten what it just registered and bail
+      // rather than assigning `unlistenFns` for a generation the store no
+      // longer owns.
+      for (const unlisten of fulfilledUnlistens) {
+        unlisten();
+      }
       return;
     }
 
+    if (hasRejection) {
+      for (const unlisten of fulfilledUnlistens) {
+        unlisten();
+      }
+      setState({ status: "error", message: errorMessage(rejectedError) });
+      return;
+    }
+
+    unlistenFns = fulfilledUnlistens;
     await refresh();
   }
 
@@ -121,8 +149,8 @@ export function createShellStore(ipc: ShellIpc): ShellStore {
       return;
     }
     started = true;
-    disposed = false;
-    void bootstrap();
+    generation += 1;
+    void bootstrap(generation);
   }
 
   function stop(): void {
@@ -130,7 +158,7 @@ export function createShellStore(ipc: ShellIpc): ShellStore {
       return;
     }
     started = false;
-    disposed = true;
+    generation += 1;
     for (const unlisten of unlistenFns) {
       unlisten();
     }
@@ -144,6 +172,11 @@ export function createShellStore(ipc: ShellIpc): ShellStore {
     setState({ ...state, selectedId: id });
     ipc.selectService(id).catch((caughtError: unknown) => {
       console.error("selectService failed:", errorMessage(caughtError));
+      // The optimistic selectedId above is now unconfirmed — refetch so it
+      // is restored from the backend's authoritative activeServiceId
+      // (see refresh()'s own comment) rather than left pointing at a
+      // service the backend never actually selected.
+      void refresh();
     });
   }
 

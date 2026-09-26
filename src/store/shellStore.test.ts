@@ -2,6 +2,39 @@ import { describe, expect, it, vi } from "vitest";
 import { createShellStore } from "./shellStore";
 import { createMockShellIpc } from "../test/mockShellIpc";
 import { service, snapshot } from "../test/fixtures";
+import type { ShellIpc } from "../ipc";
+import type { UnlistenFn } from "@tauri-apps/api/event";
+
+interface Deferred<T> {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+  reject(reason: unknown): void;
+}
+
+function createDeferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/** Returns a callback-ignoring stand-in for an `on*` subscriber that resolves
+ * with each queued promise in turn, one per call — lets a test control the
+ * timing of successive `bootstrap()` generations' registration calls. */
+function onceSequence<T>(promises: readonly Promise<T>[]): () => Promise<T> {
+  let index = 0;
+  return () => {
+    const next = promises[index];
+    index += 1;
+    if (next === undefined) {
+      throw new Error("onceSequence: no more promises queued");
+    }
+    return next;
+  };
+}
 
 describe("createShellStore", () => {
   it("starts loading, then becomes ready with the fetched snapshot", async () => {
@@ -177,5 +210,138 @@ describe("createShellStore", () => {
     const state = store.getState();
     if (state.status !== "error") throw new Error("expected error state");
     expect(state.message).toBe("boom");
+  });
+
+  it("select() logs and refetches when selectService fails, restoring selectedId from the backend", async () => {
+    const ipc = createMockShellIpc(snapshot({ activeServiceId: "gmail" }));
+    const store = createShellStore(ipc);
+    store.start();
+    await vi.waitFor(() => expect(store.getState().status).toBe("ready"));
+
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    ipc.selectService.mockRejectedValueOnce(new Error("nope"));
+    ipc.getSnapshot.mockResolvedValueOnce(snapshot({ activeServiceId: "gmail" }));
+
+    store.select("icloud");
+    const optimistic = store.getState();
+    if (optimistic.status !== "ready") throw new Error("expected ready state");
+    expect(optimistic.selectedId).toBe("icloud");
+
+    await vi.waitFor(() => {
+      expect(ipc.getSnapshot).toHaveBeenCalledTimes(2);
+    });
+    const state = store.getState();
+    if (state.status !== "ready") throw new Error("expected ready state");
+    expect(state.selectedId).toBe("gmail");
+    expect(consoleErrorSpy).toHaveBeenCalled();
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("stop() before bootstrap resolves leaves no listeners registered", async () => {
+    const servicesUnlisten = vi.fn();
+    const selectUnlisten = vi.fn();
+    const servicesDeferred = createDeferred<UnlistenFn>();
+    const selectDeferred = createDeferred<UnlistenFn>();
+
+    const ipc: ShellIpc = {
+      getSnapshot: () => Promise.resolve(snapshot()),
+      selectService: () => Promise.resolve(),
+      reorderServices: () => Promise.resolve(),
+      openSettings: () => Promise.resolve(),
+      onServicesChanged: () => servicesDeferred.promise,
+      onSelectService: () => selectDeferred.promise,
+      onStatusChanged: () => Promise.resolve(() => {}),
+    };
+    const store = createShellStore(ipc);
+
+    store.start();
+    store.stop();
+
+    servicesDeferred.resolve(servicesUnlisten);
+    selectDeferred.resolve(selectUnlisten);
+
+    await vi.waitFor(() => {
+      expect(servicesUnlisten).toHaveBeenCalledTimes(1);
+      expect(selectUnlisten).toHaveBeenCalledTimes(1);
+    });
+    // bootstrap bailed out before ever calling refresh()
+    expect(store.getState()).toEqual({ status: "loading" });
+  });
+
+  it("start → stop → start keeps only the latest generation's listeners", async () => {
+    const unlistenA1 = vi.fn();
+    const unlistenA2 = vi.fn();
+    const unlistenB1 = vi.fn();
+    const unlistenB2 = vi.fn();
+
+    const deferredA1 = createDeferred<UnlistenFn>();
+    const deferredA2 = createDeferred<UnlistenFn>();
+    const deferredB1 = createDeferred<UnlistenFn>();
+    const deferredB2 = createDeferred<UnlistenFn>();
+
+    const ipc: ShellIpc = {
+      getSnapshot: () => Promise.resolve(snapshot()),
+      selectService: () => Promise.resolve(),
+      reorderServices: () => Promise.resolve(),
+      openSettings: () => Promise.resolve(),
+      onServicesChanged: onceSequence([deferredA1.promise, deferredB1.promise]),
+      onSelectService: onceSequence([deferredA2.promise, deferredB2.promise]),
+      onStatusChanged: () => Promise.resolve(() => {}),
+    };
+    const store = createShellStore(ipc);
+
+    store.start(); // generation 1
+    store.stop();
+    store.start(); // generation 2 (or later) — the only one that should stick
+
+    // Resolve the stale (generation-1) registrations first.
+    deferredA1.resolve(unlistenA1);
+    deferredA2.resolve(unlistenA2);
+    // Then the current generation's.
+    deferredB1.resolve(unlistenB1);
+    deferredB2.resolve(unlistenB2);
+
+    await vi.waitFor(() => {
+      expect(store.getState().status).toBe("ready");
+    });
+
+    // The stale generation's registrations were unlistened as soon as they
+    // resolved, and never wired into the store.
+    expect(unlistenA1).toHaveBeenCalledTimes(1);
+    expect(unlistenA2).toHaveBeenCalledTimes(1);
+    expect(unlistenB1).not.toHaveBeenCalled();
+    expect(unlistenB2).not.toHaveBeenCalled();
+
+    // stop() only unlistens the current generation's registrations.
+    store.stop();
+    expect(unlistenB1).toHaveBeenCalledTimes(1);
+    expect(unlistenB2).toHaveBeenCalledTimes(1);
+  });
+
+  it("bootstrap: one registration rejecting unlistens the others and sets error state", async () => {
+    const unlistenServices = vi.fn();
+    const getSnapshotSpy = vi.fn(() => Promise.resolve(snapshot()));
+
+    const ipc: ShellIpc = {
+      getSnapshot: getSnapshotSpy,
+      selectService: () => Promise.resolve(),
+      reorderServices: () => Promise.resolve(),
+      openSettings: () => Promise.resolve(),
+      onServicesChanged: () => Promise.resolve(unlistenServices),
+      onSelectService: () => Promise.reject(new Error("registration failed")),
+      onStatusChanged: () => Promise.resolve(() => {}),
+    };
+    const store = createShellStore(ipc);
+
+    store.start();
+
+    await vi.waitFor(() => {
+      expect(store.getState().status).toBe("error");
+    });
+    const state = store.getState();
+    if (state.status !== "error") throw new Error("expected error state");
+    expect(state.message).toBe("registration failed");
+    expect(unlistenServices).toHaveBeenCalledTimes(1);
+    expect(getSnapshotSpy).not.toHaveBeenCalled();
   });
 });
