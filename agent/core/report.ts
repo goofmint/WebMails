@@ -37,7 +37,17 @@ export type Reporter = (result: UnreadResult) => Promise<void>;
 export function createReporter(options: CreateReporterOptions): Reporter {
   let hasSentFirstReport = false;
 
-  return async function report(result: UnreadResult): Promise<void> {
+  // Serializes `invoke` calls: the loop fires reports without waiting for
+  // the previous one to finish (loop.ts's `void options.report(result)`),
+  // so without this a slow or failing `invoke` could let a later report
+  // land at the Rust side before an earlier one. Each new invoke is
+  // chained onto this tail and only starts once the previous one has
+  // settled — success or failure — which also preserves the order
+  // reports were produced in. The chain itself must never reject, or a
+  // later report would be silently skipped.
+  let invokeChain: Promise<void> = Promise.resolve();
+
+  return function report(result: UnreadResult): Promise<void> {
     const iconCandidates = hasSentFirstReport
       ? []
       : collectIconCandidates(options.document, options.serviceUrl);
@@ -62,12 +72,16 @@ export function createReporter(options: CreateReporterOptions): Reporter {
             iconCandidates,
           };
 
-    try {
-      await options.invoke(dto);
-    } catch (error) {
-      // The loop continues regardless; the next report retries.
-      console.error("[eluma-agent] report_unread invoke failed", error);
-    }
+    const invocation = invokeChain.then(async () => {
+      try {
+        await options.invoke(dto);
+      } catch (error) {
+        // The loop continues regardless; the next report retries.
+        console.error("[eluma-agent] report_unread invoke failed", error);
+      }
+    });
+    invokeChain = invocation;
+    return invocation;
   };
 }
 

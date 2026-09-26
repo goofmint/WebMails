@@ -128,4 +128,71 @@ describe("createReporter", () => {
     await expect(report({ count: 1, messages: [] })).resolves.toBeUndefined();
     expect(errorSpy).toHaveBeenCalled();
   });
+
+  it("does not start the second invoke until the first one settles, and preserves order", async () => {
+    let resolveFirstInvoke: (() => void) | undefined;
+    const invoke = vi
+      .fn<ReportInvoke>()
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveFirstInvoke = resolve;
+          }),
+      )
+      .mockResolvedValueOnce(undefined);
+    const report = createReporter({
+      serviceId: "svc-1",
+      recipeId: "generic",
+      serviceUrl: SERVICE_URL,
+      document: makeDoc("<html><head></head><body></body></html>"),
+      clock: { now: () => 0 },
+      invoke,
+    });
+
+    // Fire both reports without awaiting the first, the way loop.ts does
+    // (`void options.report(result)`).
+    const firstPromise = report({ count: 1, messages: [] });
+    const secondPromise = report({ count: 2, messages: [] });
+
+    // Let the microtask queue run far enough for the first invoke to
+    // start; the second must not have started yet since the first is
+    // still pending.
+    await Promise.resolve();
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke.mock.calls[0]?.[0]).toMatchObject({ count: 1 });
+
+    resolveFirstInvoke?.();
+    await firstPromise;
+    await secondPromise;
+
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(invoke.mock.calls[1]?.[0]).toMatchObject({ count: 2 });
+  });
+
+  it("does not let a failed invoke block a later one", async () => {
+    const invoke = vi
+      .fn<ReportInvoke>()
+      .mockRejectedValueOnce(new Error("boom"))
+      .mockResolvedValueOnce(undefined);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const report = createReporter({
+      serviceId: "svc-1",
+      recipeId: "generic",
+      serviceUrl: SERVICE_URL,
+      document: makeDoc("<html><head></head><body></body></html>"),
+      clock: { now: () => 0 },
+      invoke,
+    });
+
+    const firstPromise = report({ count: 1, messages: [] });
+    const secondPromise = report({ count: 2, messages: [] });
+
+    await expect(firstPromise).resolves.toBeUndefined();
+    await expect(secondPromise).resolves.toBeUndefined();
+
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(invoke.mock.calls[0]?.[0]).toMatchObject({ count: 1 });
+    expect(invoke.mock.calls[1]?.[0]).toMatchObject({ count: 2 });
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+  });
 });
