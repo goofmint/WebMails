@@ -298,6 +298,13 @@ impl ServiceManager {
     /// `false` only when `id` was not eligible to activate (not created,
     /// e.g. removed by a concurrent edit before its turn) or activation
     /// failed, so `run_startup` keeps trying the next created service.
+    ///
+    /// Emits `select-service` on a successful activation (Task 1.10;
+    /// design.md §2.2.12), exactly like [`Self::select_service`], so a
+    /// shell already listening at startup (or reconnecting mid-startup)
+    /// picks up which service just became active without waiting for the
+    /// next `get_snapshot` poll — after dropping `self.inner`'s lock, the
+    /// same ordering `select_service` uses.
     async fn activate_first_at_startup(&self, id: &ServiceId) -> bool {
         let mut guard = self.inner.lock().await;
         let ManagerState::Ready(ready) = &mut *guard else {
@@ -312,6 +319,8 @@ impl ServiceManager {
         match self.host.activate(id) {
             Ok(()) => {
                 ready.active = Some(id.clone());
+                drop(guard);
+                self.emit_select_service(id);
                 true
             }
             Err(err) => {
@@ -766,12 +775,15 @@ impl ServiceManager {
     /// badge (design.md §2.2.13) already treats as the no-report-yet case.
     pub async fn snapshot(&self) -> ManagerSnapshot {
         let guard = self.inner.lock().await;
-        let (settings, services, config_error) = match &*guard {
-            ManagerState::Failed(config_error) => (None, Vec::new(), Some(config_error.clone())),
+        let (settings, services, config_error, active) = match &*guard {
+            ManagerState::Failed(config_error) => {
+                (None, Vec::new(), Some(config_error.clone()), None)
+            }
             ManagerState::Ready(ready) => (
                 Some(ready.config.settings.clone()),
                 ready.config.services.clone(),
                 None,
+                ready.active.clone(),
             ),
         };
         drop(guard);
@@ -783,6 +795,7 @@ impl ServiceManager {
             services,
             config_error,
             statuses,
+            active,
         }
     }
 
@@ -1073,6 +1086,10 @@ pub struct ManagerSnapshot {
     pub services: Vec<ServiceConfig>,
     pub config_error: Option<ConfigError>,
     pub statuses: HashMap<ServiceId, ServiceStatus>,
+    /// The currently active service, mirroring `Ready::active` — `None` in
+    /// the `Failed` state too, alongside empty `services` and no
+    /// `settings` (Task 1.10; design.md §2.2.12's `activeServiceId`).
+    pub active: Option<ServiceId>,
 }
 
 /// [`ServiceManager::with_notify_state`]'s return value: a service's

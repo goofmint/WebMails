@@ -216,10 +216,20 @@ pub fn build_main_host<B: ProfileBackend + Send + Sync + 'static>(
     inner_size: (f64, f64),
     profile_backend: B,
 ) -> AppResult<(Window<Wry>, Arc<dyn WebviewHost>)> {
+    // Tauri's native file drag-drop handler otherwise intercepts drag
+    // events before the page sees them, which silently breaks the
+    // sidebar's HTML5 drag-and-drop reorder (Task 1.10) — notably on
+    // Windows, where `WebviewWindowBuilder::disable_drag_drop_handler`'s
+    // own doc comment calls this out as required for HTML5 DnD. Applied to
+    // this main/shell window only, not via `apply_common_settings_window`
+    // (shared with every per-service window in `child_windows.rs`), since
+    // service pages still need Tauri's native handler for e.g. dropped
+    // attachments.
     let builder =
         tauri::webview::WebviewWindowBuilder::new(app, child_windows::MAIN_LABEL, shell_url)
             .title(title)
-            .inner_size(inner_size.0, inner_size.1);
+            .inner_size(inner_size.0, inner_size.1)
+            .disable_drag_drop_handler();
     let builder = apply_common_settings_window(builder);
     let main = builder.build().map_err(crate::error::AppError::from)?;
     let window = AsRef::<Webview<Wry>>::as_ref(&main).window();
