@@ -132,6 +132,22 @@ describe("bootstrapAgent", () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { reportIntervalMs: 0 },
+    { reportIntervalMs: -1 },
+    { reconcileIntervalMs: 0 },
+    { reconcileIntervalMs: -30_000 },
+  ])("logs and stops when an interval is not positive: %o", (bad) => {
+    const win = makeWindow({ bootstrap: { ...VALID_BOOTSTRAP, ...bad } });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const invoke = noopInvoke();
+
+    bootstrapAgent(win, { invoke, scheduler: noopScheduler });
+
+    expect(errorSpy).toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
   it("logs and stops when serviceUrl cannot be parsed as a URL", () => {
     const win = makeWindow({
       bootstrap: { ...VALID_BOOTSTRAP, serviceUrl: "not a url" },

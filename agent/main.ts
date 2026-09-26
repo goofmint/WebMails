@@ -37,8 +37,10 @@ function isElumaBootstrap(value: AgentWindow["__ELUMA__"]): value is ElumaBootst
     value.serviceUrl.length > 0 &&
     typeof value.reportIntervalMs === "number" &&
     Number.isFinite(value.reportIntervalMs) &&
+    value.reportIntervalMs > 0 &&
     typeof value.reconcileIntervalMs === "number" &&
-    Number.isFinite(value.reconcileIntervalMs)
+    Number.isFinite(value.reconcileIntervalMs) &&
+    value.reconcileIntervalMs > 0
   );
 }
 
