@@ -8,13 +8,21 @@
 
 import { vi, type Mock } from "vitest";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import type { ServiceConfig, ServicePatchInput, SettingsIpc, Snapshot } from "../ipc";
+import type {
+  ServiceConfig,
+  ServicePatchInput,
+  Settings,
+  SettingsIpc,
+  SettingsPatchInput,
+  Snapshot,
+} from "../ipc";
 
 export interface MockSettingsIpc extends SettingsIpc {
   readonly getSnapshot: Mock<() => Promise<Snapshot>>;
   readonly addService: Mock<(name: string, url: string, profile: string) => Promise<ServiceConfig>>;
   readonly updateService: Mock<(id: string, patch: ServicePatchInput) => Promise<ServiceConfig>>;
   readonly removeService: Mock<(id: string, deleteSessionData: boolean) => Promise<void>>;
+  readonly updateSettings: Mock<(patch: SettingsPatchInput) => Promise<Settings>>;
   readonly selectService: Mock<(id: string) => Promise<void>>;
   emitServicesChanged(): void;
 }
@@ -48,6 +56,19 @@ export function createMockSettingsIpc(initialSnapshot: Snapshot): MockSettingsIp
   );
 
   const removeService = vi.fn((): Promise<void> => Promise.resolve());
+
+  const updateSettings = vi.fn((patch: SettingsPatchInput): Promise<Settings> => {
+    const current = initialSnapshot.settings;
+    return Promise.resolve({
+      reconcile_interval_seconds:
+        patch.reconcile_interval_seconds ?? current?.reconcile_interval_seconds ?? 60,
+      notifications: patch.notifications ?? current?.notifications ?? true,
+      notification_batch_threshold:
+        patch.notification_batch_threshold ?? current?.notification_batch_threshold ?? 5,
+      badge_sidebar: patch.badge_sidebar ?? current?.badge_sidebar ?? true,
+    });
+  });
+
   const selectService = vi.fn((): Promise<void> => Promise.resolve());
 
   function onServicesChanged(callback: () => void): Promise<UnlistenFn> {
@@ -64,6 +85,7 @@ export function createMockSettingsIpc(initialSnapshot: Snapshot): MockSettingsIp
     addService,
     updateService,
     removeService,
+    updateSettings,
     selectService,
     onServicesChanged,
     emitServicesChanged() {

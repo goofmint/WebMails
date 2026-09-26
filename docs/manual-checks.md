@@ -80,6 +80,12 @@ For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/
 - [ ] Adding a URL in the settings window's add form produces a usable mail tab: the service appears in the sidebar, becomes the active tab, and its page loads and can be signed into (macOS)
 - [ ] Same, Windows 11
 
+### Task 1.13 — Settings window: global settings
+
+For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/fail, with notes) before checking it off.
+
+- [ ] Editing a global setting (e.g. the reconcile interval) in the settings window's global settings form, saving, then reopening `config.toml` in a text editor shows the new value with the rest of the file's comments and formatting intact (macOS/Windows) — the automated equivalent is `src-tauri/src/config/store.rs`'s `update_settings_*` tests (Task 1.3/1.13); this item is the real-file confirmation
+
 ## M2 — Unread
 
 Exit criterion (SPEC §16): N Gmail accounts plus iCloud show live counts while the window is in the background.

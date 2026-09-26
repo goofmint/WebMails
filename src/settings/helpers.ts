@@ -2,7 +2,8 @@
  * Pure helpers for the settings screen's CRUD forms (Task 1.12): URL
  * parsing/validation, recipe-driven name/profile suggestion, and the
  * default/isolated/named profile representation the add and edit forms
- * share via `ProfileField`.
+ * share via `ProfileField`. Also `parseU32` (Task 1.13), the numeric
+ * validation the global settings form's two integer fields share.
  */
 
 import { matchRecipe } from "../../agent/recipes/registry";
@@ -97,6 +98,32 @@ export interface ServiceSuggestion {
 export function suggestServiceDetails(url: URL): ServiceSuggestion {
   const recipe = matchRecipe(url);
   return { name: url.hostname, profile: defaultProfileSelection(recipe.defaultProfile) };
+}
+
+/**
+ * The largest value `reconcile_interval_seconds`/`notification_batch_threshold`
+ * accept: both cross the wire as a Rust `u32` (`SettingsPatchDto` in
+ * src-tauri/src/commands/dto.rs), whose range is 0..=4294967295.
+ */
+const U32_MAX = 4294967295;
+
+/**
+ * Parses `value` as a non-negative integer within `u32`'s range
+ * (0..=4294967295), returning `null` for anything else: an empty string, a
+ * decimal point, a leading `+`/`-` sign, leading/trailing whitespace, or a
+ * value above `u32::MAX`. Mirrors `parseServiceUrl`'s "parse-or-reject,
+ * never coerce" shape — the caller decides what to do with `null`, this
+ * never substitutes a default.
+ */
+export function parseU32(value: string): number | null {
+  if (!/^\d+$/.test(value)) {
+    return null;
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed > U32_MAX) {
+    return null;
+  }
+  return parsed;
 }
 
 /** The distinct named (non-`default`/`isolated`) profiles already used by `services`, sorted. */

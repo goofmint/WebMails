@@ -16,10 +16,18 @@ export type {
   ServiceStatus,
   Snapshot,
   ServicePatchInput,
+  SettingsPatchInput,
   CommandError,
 } from "./types";
 export { toCommandError } from "./errors";
-import type { Snapshot, ServiceStatus, ServiceConfig, ServicePatchInput } from "./types";
+import type {
+  Snapshot,
+  ServiceStatus,
+  ServiceConfig,
+  ServicePatchInput,
+  Settings,
+  SettingsPatchInput,
+} from "./types";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
 export interface ShellIpc {
@@ -47,18 +55,21 @@ export const shellIpc: ShellIpc = {
 
 /**
  * `SettingsIpc`: the settings window's whole view of the backend (Task
- * 1.12) — a different subset of the same command/event surface `ShellIpc`
- * wraps (design.md §2.2.12, §2.2.13): the three CRUD commands plus
- * `getSnapshot`/`selectService`/`onServicesChanged`, reused unchanged from
- * the same underlying `./commands`/`./events` wrappers `ShellIpc` uses.
- * `reorderServices`/`openSettings`/`onSelectService`/`onStatusChanged` are
- * shell-only and stay out of this interface.
+ * 1.12, extended by Task 1.13) — a different subset of the same
+ * command/event surface `ShellIpc` wraps (design.md §2.2.12, §2.2.13): the
+ * three service CRUD commands plus `updateSettings` (Task 1.13's global
+ * settings form) and `getSnapshot`/`selectService`/`onServicesChanged`,
+ * reused unchanged from the same underlying `./commands`/`./events`
+ * wrappers `ShellIpc` uses. `reorderServices`/`openSettings`/
+ * `onSelectService`/`onStatusChanged` are shell-only and stay out of this
+ * interface.
  */
 export interface SettingsIpc {
   getSnapshot(): Promise<Snapshot>;
   addService(name: string, url: string, profile: string): Promise<ServiceConfig>;
   updateService(id: string, patch: ServicePatchInput): Promise<ServiceConfig>;
   removeService(id: string, deleteSessionData: boolean): Promise<void>;
+  updateSettings(patch: SettingsPatchInput): Promise<Settings>;
   selectService(id: string): Promise<void>;
   onServicesChanged(callback: () => void): Promise<UnlistenFn>;
 }
@@ -69,6 +80,7 @@ export const settingsIpc: SettingsIpc = {
   addService: commands.addService,
   updateService: commands.updateService,
   removeService: commands.removeService,
+  updateSettings: commands.updateSettings,
   selectService: commands.selectService,
   onServicesChanged: events.onServicesChanged,
 };

@@ -12,6 +12,7 @@ import type { CommandError, SettingsIpc, Snapshot } from "../ipc";
 import { toCommandError } from "../ipc";
 import { ServiceList } from "./ServiceList";
 import { AddServiceForm } from "./AddServiceForm";
+import { GlobalSettingsForm } from "./GlobalSettingsForm";
 import "./settings.css";
 
 export interface SettingsAppProps {
@@ -115,6 +116,17 @@ export function SettingsApp({ ipc }: SettingsAppProps) {
       <h1>Settings</h1>
       <ServiceList ipc={ipc} services={snapshot.services} />
       <AddServiceForm ipc={ipc} services={snapshot.services} />
+      {snapshot.settings === null ? (
+        // `settings` is only ever `null` alongside a `configError`
+        // (design.md §2.2.12), and that case already returned above — this
+        // branch only exists so the compiler doesn't need a non-null
+        // assertion below, not because it is expected to render.
+        <p className="settings__error" role="alert">
+          Settings unavailable.
+        </p>
+      ) : (
+        <GlobalSettingsForm ipc={ipc} settings={snapshot.settings} />
+      )}
     </div>
   );
 }
