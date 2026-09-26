@@ -50,8 +50,14 @@ export function ServiceIcon({
   onDrop,
   onDragEnd,
 }: ServiceIconProps) {
-  const [imageFailed, setImageFailed] = useState(false);
-  const showImage = cachedIcon !== undefined && !imageFailed;
+  // Tracks the *source* (path + cache-busting version) that last failed to
+  // load, not just whether some image ever failed: a stale failure must not
+  // suppress a newer cached PNG (a later `service-icon-changed` bumps
+  // `cachedIcon.version`, producing a different `src`), so only an exact
+  // match with the current source counts as "still failed".
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const src = cachedIcon ? `${convertFileSrc(cachedIcon.path)}?v=${cachedIcon.version}` : undefined;
+  const showImage = src !== undefined && src !== failedSrc;
   const initial = initialForService(service.name, service.id);
   const letterColor = colorForServiceId(service.id);
   // Same label Badge itself would render (or `null` if Badge renders
@@ -100,13 +106,13 @@ export function ServiceIcon({
       onDrop={handleDrop}
       onDragEnd={onDragEnd}
     >
-      {showImage ? (
+      {showImage && src !== undefined ? (
         <img
           className="service-icon__image"
-          src={`${convertFileSrc(cachedIcon.path)}?v=${cachedIcon.version}`}
+          src={src}
           alt=""
           onError={() => {
-            setImageFailed(true);
+            setFailedSrc(src);
           }}
         />
       ) : (

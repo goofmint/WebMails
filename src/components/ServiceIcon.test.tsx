@@ -89,6 +89,93 @@ describe("ServiceIcon", () => {
     expect(button.querySelector(".service-icon__initial")?.textContent).toBe("G");
   });
 
+  it("shows a newer cached version again after a previous version failed to load", () => {
+    const { rerender } = render(
+      <ServiceIcon
+        service={service({ id: "gmail", name: "Gmail" })}
+        cachedIcon={{ path: "/tmp/eluma/data/icons/gmail.png", version: 1 }}
+        selected={false}
+        size={64}
+        draggable={false}
+        isDropTarget={false}
+        status={undefined}
+        badgesEnabled={true}
+        {...handlers}
+      />,
+    );
+
+    const button = screen.getByRole("button", { name: "Gmail" });
+    const img = button.querySelector("img");
+    expect(img).not.toBeNull();
+    if (img === null) throw new Error("expected an img element");
+    fireEvent.error(img);
+    expect(button.querySelector("img")).toBeNull();
+
+    // A new version (e.g. after `refresh_icon` or a fresh resolution)
+    // produces a different `src`, which must be shown again even though
+    // the previous version's src just failed.
+    rerender(
+      <ServiceIcon
+        service={service({ id: "gmail", name: "Gmail" })}
+        cachedIcon={{ path: "/tmp/eluma/data/icons/gmail.png", version: 2 }}
+        selected={false}
+        size={64}
+        draggable={false}
+        isDropTarget={false}
+        status={undefined}
+        badgesEnabled={true}
+        {...handlers}
+      />,
+    );
+
+    const newImg = button.querySelector("img");
+    expect(newImg).not.toBeNull();
+    expect(newImg?.getAttribute("src")).toBe(
+      "asset://localhost//tmp/eluma/data/icons/gmail.png?v=2",
+    );
+  });
+
+  it("keeps showing the letter icon on re-render while the same version is still failed", () => {
+    const { rerender } = render(
+      <ServiceIcon
+        service={service({ id: "gmail", name: "Gmail" })}
+        cachedIcon={{ path: "/tmp/eluma/data/icons/gmail.png", version: 1 }}
+        selected={false}
+        size={64}
+        draggable={false}
+        isDropTarget={false}
+        status={undefined}
+        badgesEnabled={true}
+        {...handlers}
+      />,
+    );
+
+    const button = screen.getByRole("button", { name: "Gmail" });
+    const img = button.querySelector("img");
+    if (img === null) throw new Error("expected an img element");
+    fireEvent.error(img);
+    expect(button.querySelector("img")).toBeNull();
+
+    // Re-rendering with the exact same (still-failed) version must not
+    // flip back to trying the broken image.
+    rerender(
+      <ServiceIcon
+        service={service({ id: "gmail", name: "Gmail" })}
+        cachedIcon={{ path: "/tmp/eluma/data/icons/gmail.png", version: 1 }}
+        selected={false}
+        size={64}
+        draggable={false}
+        isDropTarget={false}
+        status={undefined}
+        badgesEnabled={true}
+        {...handlers}
+      />,
+    );
+
+    expect(button.querySelector("img")).toBeNull();
+    expect(button.querySelector(".service-icon__initial")?.textContent).toBe("G");
+  });
+
   it("gives the letter icon a deterministic background colour derived from the service id", () => {
     render(
       <ServiceIcon

@@ -36,16 +36,41 @@ pub fn is_disallowed_ip(addr: &IpAddr) -> bool {
     }
 }
 
-fn is_disallowed_ipv4(addr: &Ipv4Addr) -> bool {
-    addr.is_loopback() || addr.is_private() || addr.is_link_local()
+/// Whether `addr` falls in `0.0.0.0/8` — "this network", RFC 791/1122 — a
+/// broader range than just the single unspecified address `0.0.0.0` that
+/// [`Ipv4Addr::is_unspecified`] alone would catch.
+fn is_in_this_network_ipv4(addr: &Ipv4Addr) -> bool {
+    addr.octets()[0] == 0
 }
 
-/// Segment-based IPv6 range checks: loopback (`::1`), IPv4-mapped
-/// (`::ffff:0:0/96`, converted and re-checked against [`is_disallowed_ipv4`]),
-/// unicast link-local (`fe80::/10`) and unique local (`fc00::/7`, IPv6's
-/// private-equivalent range).
+/// Whether `addr` falls in the shared/carrier-grade-NAT range
+/// `100.64.0.0/10` (RFC 6598) — used by ISPs and cloud providers for
+/// address sharing, and reachable only from inside that same private
+/// network, so it is exactly as unsafe a destination as RFC 1918 private
+/// space.
+fn is_in_cgnat_range_ipv4(addr: &Ipv4Addr) -> bool {
+    let octets = addr.octets();
+    octets[0] == 100 && (64..=127).contains(&octets[1])
+}
+
+fn is_disallowed_ipv4(addr: &Ipv4Addr) -> bool {
+    addr.is_loopback()
+        || addr.is_private()
+        || addr.is_link_local()
+        || addr.is_unspecified()
+        || addr.is_broadcast()
+        || addr.is_multicast()
+        || is_in_this_network_ipv4(addr)
+        || is_in_cgnat_range_ipv4(addr)
+}
+
+/// Segment-based IPv6 range checks: unspecified (`::`), loopback (`::1`),
+/// IPv4-mapped (`::ffff:0:0/96`, converted and re-checked against
+/// [`is_disallowed_ipv4`]), unicast link-local (`fe80::/10`), unique local
+/// (`fc00::/7`, IPv6's private-equivalent range) and multicast
+/// (`ff00::/8`).
 fn is_disallowed_ipv6(addr: &Ipv6Addr) -> bool {
-    if addr.is_loopback() {
+    if addr.is_unspecified() || addr.is_loopback() || addr.is_multicast() {
         return true;
     }
     let segments = addr.segments();
@@ -107,5 +132,51 @@ mod tests {
     #[test]
     fn public_ip_addr_is_allowed() {
         assert!(!is_disallowed_ip(&IpAddr::V4(V4::new(93, 184, 216, 34))));
+    }
+
+    // --- newly widened ranges ------------------------------------------------
+
+    #[test]
+    fn unspecified_ipv4_is_disallowed() {
+        assert!(is_disallowed_ip(&IpAddr::V4(V4::new(0, 0, 0, 0))));
+    }
+
+    #[test]
+    fn broadcast_ipv4_is_disallowed() {
+        assert!(is_disallowed_ip(&IpAddr::V4(V4::new(255, 255, 255, 255))));
+    }
+
+    #[test]
+    fn multicast_ipv4_is_disallowed() {
+        assert!(is_disallowed_ip(&IpAddr::V4(V4::new(224, 0, 0, 1))));
+    }
+
+    #[test]
+    fn this_network_ipv4_slash_8_is_disallowed() {
+        assert!(is_disallowed_ip(&IpAddr::V4(V4::new(0, 1, 2, 3))));
+    }
+
+    #[test]
+    fn cgnat_ipv4_slash_10_is_disallowed() {
+        assert!(is_disallowed_ip(&IpAddr::V4(V4::new(100, 64, 0, 1))));
+        assert!(is_disallowed_ip(&IpAddr::V4(V4::new(100, 127, 255, 255))));
+    }
+
+    #[test]
+    fn addresses_just_outside_the_cgnat_range_are_allowed() {
+        assert!(!is_disallowed_ip(&IpAddr::V4(V4::new(100, 63, 255, 255))));
+        assert!(!is_disallowed_ip(&IpAddr::V4(V4::new(100, 128, 0, 0))));
+    }
+
+    #[test]
+    fn unspecified_ipv6_is_disallowed() {
+        assert!(is_disallowed_ip(&IpAddr::V6(Ipv6Addr::UNSPECIFIED)));
+    }
+
+    #[test]
+    fn multicast_ipv6_is_disallowed() {
+        assert!(is_disallowed_ip(&IpAddr::V6(Ipv6Addr::new(
+            0xff02, 0, 0, 0, 0, 0, 0, 1
+        ))));
     }
 }

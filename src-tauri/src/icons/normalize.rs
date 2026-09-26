@@ -4,11 +4,42 @@
 //! other undecodable data are rejected as [`NormalizeError::Decode`], never
 //! papered over with a placeholder.
 
-use image::{imageops::FilterType, DynamicImage, GenericImage, ImageFormat, RgbaImage};
+use std::io::Cursor;
+
+use image::{
+    imageops::FilterType, DynamicImage, GenericImage, ImageFormat, ImageReader, Limits, RgbaImage,
+};
 
 /// The side length (in pixels) every cached icon is normalised to
 /// (design.md §2.2.10).
 pub const ICON_SIZE: u32 = 128;
+
+/// The maximum width/height [`normalize_to_png`] will decode an incoming
+/// candidate at (design.md §2.2.10): comfortably larger than any real
+/// favicon or app icon, and small enough that an image whose *encoded*
+/// bytes are tiny but whose declared pixel dimensions are enormous (a
+/// decompression bomb) is rejected — as [`NormalizeError::Decode`] — before
+/// it is ever decoded into memory.
+const MAX_DECODE_DIMENSION: u32 = 4096;
+
+/// The maximum total bytes the decoder may allocate for one image
+/// (design.md §2.2.10) — [`MAX_DECODE_DIMENSION`] squared at 4 bytes/pixel
+/// (4096×4096×4 = 64 MiB) is exactly this cap, so a legitimate image at the
+/// dimension limit still decodes, while anything needing more (whether from
+/// larger declared dimensions or a decoder's own intermediate buffers) is
+/// rejected instead.
+const MAX_DECODE_ALLOC_BYTES: u64 = 64 * 1024 * 1024;
+
+/// The [`Limits`] every decode in this module runs under. `Limits` is
+/// `#[non_exhaustive]`, so built by mutating [`Limits::default`]'s fields
+/// rather than a struct literal.
+fn decode_limits() -> Limits {
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_DECODE_DIMENSION);
+    limits.max_image_height = Some(MAX_DECODE_DIMENSION);
+    limits.max_alloc = Some(MAX_DECODE_ALLOC_BYTES);
+    limits
+}
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum NormalizeError {
@@ -26,11 +57,18 @@ pub enum NormalizeError {
 /// beyond [`ICON_SIZE`]) and centres the result on a transparent
 /// `ICON_SIZE`×`ICON_SIZE` canvas, then encodes it as PNG.
 pub fn normalize_to_png(bytes: &[u8]) -> Result<Vec<u8>, NormalizeError> {
-    // `image::load_from_memory` guesses the format from the byte content
-    // itself (magic bytes), not a file extension, and has no SVG decoder
-    // registered at all — an SVG payload (or any other unsupported/corrupt
-    // data) always falls into this `Err` branch.
-    let decoded = image::load_from_memory(bytes).map_err(|_| NormalizeError::Decode)?;
+    // `with_guessed_format` guesses the format from the byte content itself
+    // (magic bytes), not a file extension, and has no SVG decoder registered
+    // at all — an SVG payload (or any other unsupported/corrupt data) always
+    // falls into one of these `Err` branches. `decode_limits` caps both the
+    // claimed pixel dimensions and the decoder's allocation, so a
+    // decompression bomb — tiny encoded bytes, enormous declared dimensions
+    // — is rejected as `Decode` instead of being decoded into memory.
+    let mut reader = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|_| NormalizeError::Decode)?;
+    reader.limits(decode_limits());
+    let decoded = reader.decode().map_err(|_| NormalizeError::Decode)?;
 
     let resized = decoded.resize(ICON_SIZE, ICON_SIZE, FilterType::Lanczos3);
     let canvas = center_on_transparent_canvas(&resized);
@@ -129,5 +167,87 @@ mod tests {
         let decoded = image::load_from_memory(&png).expect("decode result");
         assert_eq!(decoded.width(), ICON_SIZE);
         assert_eq!(decoded.height(), ICON_SIZE);
+    }
+
+    // --- decode limits (decompression-bomb rejection) -----------------------
+
+    /// The standard CRC-32 (IEEE 802.3, reflected, polynomial `0xEDB88320`)
+    /// PNG chunks are checksummed with — implemented by hand here so
+    /// [`oversized_png_header`] can hand-craft a well-formed PNG chunk
+    /// stream without pulling in a CRC dependency just for this one test.
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut crc: u32 = 0xFFFF_FFFF;
+        for &byte in bytes {
+            crc ^= byte as u32;
+            for _ in 0..8 {
+                crc = if crc & 1 != 0 {
+                    (crc >> 1) ^ 0xEDB8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        crc ^ 0xFFFF_FFFF
+    }
+
+    fn png_chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut chunk = Vec::new();
+        chunk.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        let mut crc_input = Vec::with_capacity(4 + data.len());
+        crc_input.extend_from_slice(kind);
+        crc_input.extend_from_slice(data);
+        chunk.extend_from_slice(kind);
+        chunk.extend_from_slice(data);
+        chunk.extend_from_slice(&crc32(&crc_input).to_be_bytes());
+        chunk
+    }
+
+    /// A hand-crafted, well-formed PNG byte stream whose `IHDR` declares a
+    /// 50000×50000 image — far beyond [`MAX_DECODE_DIMENSION`] — but which
+    /// carries no pixel data at all (just `IHDR` and `IEND`): a
+    /// decompression bomb's defining trait is tiny encoded bytes with an
+    /// enormous *declared* size, and the dimension check must reject this
+    /// before any pixel buffer is ever allocated, so there is nothing to
+    /// decompress in the first place.
+    fn oversized_png_header() -> Vec<u8> {
+        let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&50_000u32.to_be_bytes()); // width
+        ihdr.extend_from_slice(&50_000u32.to_be_bytes()); // height
+        ihdr.push(8); // bit depth
+        ihdr.push(6); // color type: RGBA
+        ihdr.push(0); // compression method
+        ihdr.push(0); // filter method
+        ihdr.push(0); // interlace method
+        bytes.extend(png_chunk(b"IHDR", &ihdr));
+        bytes.extend(png_chunk(b"IEND", &[]));
+        bytes
+    }
+
+    #[test]
+    fn rejects_a_png_whose_declared_dimensions_exceed_the_decode_limit() {
+        let bomb = oversized_png_header();
+        let err = normalize_to_png(&bomb).unwrap_err();
+        assert_eq!(err, NormalizeError::Decode);
+    }
+
+    #[test]
+    fn the_oversized_header_is_specifically_rejected_by_the_limits_check() {
+        // Same fixture as above, but exercised one layer down so the
+        // failure can be confirmed to be `image::ImageError::Limits` and
+        // not some other, incidental decode failure (e.g. the missing
+        // pixel data).
+        let bomb = oversized_png_header();
+        let mut reader = ImageReader::new(Cursor::new(&bomb))
+            .with_guessed_format()
+            .expect("format is guessable from the PNG signature");
+        reader.limits(decode_limits());
+        let err = reader
+            .decode()
+            .expect_err("oversized dimensions must be rejected");
+        assert!(
+            matches!(err, image::ImageError::Limits(_)),
+            "expected a Limits error, got {err:?}"
+        );
     }
 }
