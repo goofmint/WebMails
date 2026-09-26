@@ -183,6 +183,14 @@ describe("startLoop", () => {
     expect(report).toHaveBeenCalledTimes(1);
     expect(report).toHaveBeenCalledWith({ count: 3, messages: [] });
 
+    // A second interval re-sends the same result again, still without a
+    // new read.
+    report.mockClear();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(read).not.toHaveBeenCalled();
+    expect(report).toHaveBeenCalledTimes(1);
+    expect(report).toHaveBeenCalledWith({ count: 3, messages: [] });
+
     stop();
   });
 
