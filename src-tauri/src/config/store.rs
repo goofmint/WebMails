@@ -628,6 +628,66 @@ icon = { source = "url", value = "https://gamma.example.com/icon.png" }  # gamma
         assert_eq!(load(&path).expect("reload"), result);
     }
 
+    /// Task 1.13's frontend form can submit all four `[settings]` keys in a
+    /// single patch (only the ones the user actually changed, but that can
+    /// still be all four at once) — including a bool field, which
+    /// `set_scalar` has to serialize as a bare `true`/`false` rather than a
+    /// quoted string. This checks the whole file's bytes after the write
+    /// (every trailing comment on `[settings]`'s own lines, plus every
+    /// other section's comments, must survive untouched) and that
+    /// reloading the file reproduces the same `Settings`.
+    #[test]
+    fn update_settings_with_all_four_keys_in_one_patch_preserves_every_comment() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = write_config(&dir, &round_trip_config());
+
+        let patch = SettingsPatch {
+            reconcile_interval_seconds: Some(30),
+            notifications: Some(false),
+            notification_batch_threshold: Some(10),
+            badge_sidebar: Some(false),
+        };
+        let result =
+            apply(&path, ConfigEdit::UpdateSettings(patch)).expect("update should succeed");
+        assert_eq!(result.settings.reconcile_interval_seconds, 30);
+        assert!(!result.settings.notifications);
+        assert_eq!(result.settings.notification_batch_threshold, 10);
+        assert!(!result.settings.badge_sidebar);
+
+        // Modifies only `HEADER` (the `[settings]` block) and leaves
+        // `ALPHA_BLOCK`/`BETA_BLOCK`/`GAMMA_BLOCK` untouched — several of
+        // those services also have their own `notifications = true` line,
+        // so a whole-file string replace would wrongly touch those too;
+        // `replace_once` on `HEADER` alone can't reach them.
+        let expected_header = replace_once(
+            &replace_once(
+                &replace_once(
+                    &replace_once(
+                        HEADER,
+                        "reconcile_interval_seconds = 60   # sweep; observers are the primary signal",
+                        "reconcile_interval_seconds = 30   # sweep; observers are the primary signal",
+                    ),
+                    "notifications = true",
+                    "notifications = false",
+                ),
+                "notification_batch_threshold = 5",
+                "notification_batch_threshold = 10",
+            ),
+            "badge_sidebar = true",
+            "badge_sidebar = false",
+        );
+        let expected = [
+            expected_header.as_str(),
+            ALPHA_BLOCK,
+            BETA_BLOCK,
+            GAMMA_BLOCK,
+        ]
+        .concat();
+        let on_disk = fs::read_to_string(&path).expect("read back");
+        assert_eq!(on_disk, expected);
+        assert_eq!(load(&path).expect("reload"), result);
+    }
+
     #[test]
     fn remove_service_from_the_middle_keeps_the_others_and_their_comments() {
         let dir = tempfile::tempdir().expect("create temp dir");
