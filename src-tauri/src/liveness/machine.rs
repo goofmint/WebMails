@@ -152,15 +152,20 @@ impl LivenessMachine {
     /// rather than inheriting a stale one. Registers `id` if it was not
     /// already tracked.
     pub fn touch(&mut self, id: &ServiceId, now_ms: u64) {
-        let generation = self
-            .services
-            .get(id)
-            .map_or(0, |existing| existing.generation.wrapping_add(1));
+        // A report never moves the baseline backwards (e.g. a clock step
+        // back, or two reports processed out of order).
+        let (generation, report_ms) = match self.services.get(id) {
+            Some(existing) => (
+                existing.generation.wrapping_add(1),
+                now_ms.max(existing.last_report_ms),
+            ),
+            None => (0, now_ms),
+        };
         self.services.insert(
             id.clone(),
             ServiceLiveness {
                 generation,
-                ..ServiceLiveness::fresh(now_ms)
+                ..ServiceLiveness::fresh(report_ms)
             },
         );
     }
@@ -624,5 +629,19 @@ mod tests {
                 Action::Reload { id: id("gmail") },
             ]
         );
+    }
+
+    #[test]
+    fn touch_never_moves_the_last_report_time_backwards() {
+        let mut machine = LivenessMachine::new();
+        let id = ServiceId::new("svc-1").expect("valid id");
+        machine.touch(&id, 100_000);
+        machine.touch(&id, 50_000);
+        // Still measured from 100_000: at 100_000 + 65_000 it is not yet stale.
+        let statuses = std::collections::HashMap::from([(
+            id.clone(),
+            crate::unread::ServiceStatus::Ok { count: 1 },
+        )]);
+        assert!(machine.tick(165_000, &statuses).is_empty());
     }
 }
