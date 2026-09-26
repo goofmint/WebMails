@@ -18,6 +18,12 @@
 //!
 //! No `#[tauri::command]`s live here: Task 1.9 wraps these methods as
 //! commands and defines the full snapshot the shell receives.
+//!
+//! [`ServiceManager`] also owns an [`AppNapGuard`] (design.md §2.2.8,
+//! §2.2.11; Task 3.1): every insert into or removal from `Ready::
+//! created` is immediately followed by a call to [`AppNapGuard::sync`]
+//! with the new `created.len()`, so the macOS App Nap assertion is held
+//! exactly while at least one service is created.
 
 mod reconcile;
 mod slug;
@@ -41,6 +47,7 @@ use crate::config::{
 };
 use crate::error::{AppError, AppResult};
 use crate::host::{ServiceWebviewSpec, WebviewHost};
+use crate::platform::app_nap::AppNapGuard;
 use crate::profile::{self, PlatformProfileBackend, ProfileBackend, ProfileKey};
 use crate::state::StateStore;
 
@@ -126,6 +133,15 @@ pub struct ServiceManager {
     app_handle: AppHandle<Wry>,
     config_path: PathBuf,
     inner: Mutex<ManagerState>,
+    /// Holds the macOS App Nap assertion while at least one service is
+    /// created (design.md §2.2.8, §2.2.11; Task 3.1). Every call site
+    /// that inserts into or removes from `Ready::created` — currently
+    /// [`Self::create_one_locked`], [`Self::execute_destroy`] and
+    /// [`Self::execute_recreate`] — calls [`AppNapGuard::sync`]
+    /// immediately after, with `ready.created.len()`, so this stays a
+    /// direct reflection of the live resident count. On non-macOS this
+    /// is a documented no-op (see `platform::app_nap`'s module doc).
+    app_nap: AppNapGuard,
 }
 
 impl ServiceManager {
@@ -152,6 +168,7 @@ impl ServiceManager {
                 active: None,
                 create_errors: BTreeMap::new(),
             })),
+            app_nap: AppNapGuard::new(),
         }
     }
 
@@ -176,6 +193,11 @@ impl ServiceManager {
             app_handle,
             config_path,
             inner: Mutex::new(ManagerState::Failed(error)),
+            // No `Config` was loaded, so no service is ever created in
+            // this state (module doc's "Editing ... is refused"): the
+            // guard is constructed but `sync` is never called, so it
+            // never acquires an assertion.
+            app_nap: AppNapGuard::new(),
         }
     }
 
@@ -333,6 +355,10 @@ impl ServiceManager {
             Ok(()) => {
                 ready.created.insert(id.clone());
                 ready.create_errors.remove(id);
+                // Keep the App Nap assertion in sync with the resident
+                // count right after every successful insert (design.md
+                // §2.2.8; `ServiceManager::app_nap`'s doc comment).
+                self.app_nap.sync(ready.created.len());
                 Ok(())
             }
             Err(err) => {
@@ -384,6 +410,10 @@ impl ServiceManager {
         }
         ready.created.remove(id);
         ready.create_errors.remove(id);
+        // Keep the App Nap assertion in sync with the resident count
+        // right after every successful removal (design.md §2.2.8;
+        // `ServiceManager::app_nap`'s doc comment).
+        self.app_nap.sync(ready.created.len());
 
         if ready.active.as_ref() == Some(id) {
             ready.active = None;
@@ -408,6 +438,14 @@ impl ServiceManager {
             return;
         }
         ready.created.remove(id);
+        // Keep the App Nap assertion in sync with the resident count
+        // right after every successful removal (design.md §2.2.8;
+        // `ServiceManager::app_nap`'s doc comment). The re-creation just
+        // below calls `create_one_locked`, which syncs again after its
+        // own insert, so a solo service's recreate briefly releases and
+        // immediately re-acquires the assertion — a correct reflection
+        // of "no service exists" for that instant, not a bug.
+        self.app_nap.sync(ready.created.len());
         if was_active {
             ready.active = None;
         }
