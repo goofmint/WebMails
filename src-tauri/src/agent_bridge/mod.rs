@@ -14,9 +14,10 @@ mod validate;
 
 use std::sync::Arc;
 
-use tauri::State;
+use tauri::{Manager, State};
 
 use crate::config::ServiceId;
+use crate::liveness::LivenessRuntime;
 use crate::notify::Dispatcher;
 use crate::services::ServiceManager;
 
@@ -68,6 +69,7 @@ pub(crate) use validate::validate;
 /// Tauri requires it for async commands that borrow managed state.
 #[tauri::command]
 pub async fn report_unread(
+    app: tauri::AppHandle,
     webview: tauri::Webview,
     report: UnreadReportDto,
     services: State<'_, Arc<ServiceManager>>,
@@ -98,6 +100,17 @@ pub async fn report_unread(
             services
                 .inner()
                 .record_report(valid_report.service_id(), valid_report.count());
+            // Liveness (design.md §2.2.8, §2.2.6: "Liveness uses the time
+            // Rust receives the report", never the report's own
+            // `observedAt`). Looked up via `try_state`, not the `State`
+            // extractor: the runtime is legitimately unmanaged when
+            // startup failed to open `state.json` (see `lib.rs`'s
+            // `setup`), and no webview — hence no report — should exist
+            // in that case anyway, but this must not panic if one somehow
+            // arrives.
+            if let Some(liveness) = app.try_state::<Arc<LivenessRuntime>>() {
+                liveness.record_report(valid_report.service_id());
+            }
             tracing::debug!(
                 service_id = %valid_report.service_id(),
                 "accepted unread report"

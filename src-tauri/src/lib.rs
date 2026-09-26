@@ -4,6 +4,7 @@ mod commands;
 pub mod config;
 pub mod error;
 pub mod host;
+pub mod liveness;
 mod notify;
 pub mod paths;
 mod platform;
@@ -160,16 +161,29 @@ pub fn run() {
             // `StateStore::open` returns a plain `AppError` with no
             // `file`/`key`/`reason` structure of its own — as `commands::
             // get_snapshot`'s `configError` field, Task 1.9).
+            // Kept alongside `manager` (rather than only inside it) so the
+            // liveness runtime below can share the one open `StateStore` —
+            // and its one debounced save worker — instead of opening
+            // `state.json` a second time (design.md §2.2.8; Task 3.2).
+            // `None` exactly when `manager` ends up `Failed`: no services
+            // ever start in that case, so there is nothing for liveness to
+            // monitor either.
+            let mut liveness_state: Option<Arc<StateStore>> = None;
+
             let manager: Arc<ServiceManager> = match config::load_or_init(&config_path) {
                 Ok(loaded_config) => match StateStore::open(state_path.clone()) {
-                    Ok(state) => Arc::new(ServiceManager::ready(
-                        host.clone(),
-                        manager_profile_backend,
-                        app.handle().clone(),
-                        config_path,
-                        loaded_config,
-                        state,
-                    )),
+                    Ok(state) => {
+                        let state = Arc::new(state);
+                        liveness_state = Some(state.clone());
+                        Arc::new(ServiceManager::ready(
+                            host.clone(),
+                            manager_profile_backend,
+                            app.handle().clone(),
+                            config_path,
+                            loaded_config,
+                            state,
+                        ))
+                    }
                     Err(err) => {
                         tracing::error!("failed to open state store: {err}");
                         let state_error = config::ConfigError {
@@ -199,6 +213,21 @@ pub fn run() {
             };
 
             app.manage(manager.clone());
+
+            // The liveness monitor (design.md §2.2.8, SPEC.md §9.4; Task
+            // 3.2): only started when startup actually loaded a
+            // `StateStore` to persist staleness into. Managed so
+            // `agent_bridge::report_unread` can look it up (via
+            // `AppHandle::try_state`, not the `State` extractor, since it
+            // is legitimately absent on a failed startup) and touch it on
+            // every validated report.
+            if let Some(state) = liveness_state {
+                let liveness =
+                    liveness::LivenessRuntime::new(manager.clone(), state, app.handle().clone());
+                app.manage(liveness.clone());
+                liveness.spawn();
+            }
+
             // Spawns staggered service creation in the background
             // (`tauri::async_runtime`) and returns immediately; this hook
             // never blocks on it.
