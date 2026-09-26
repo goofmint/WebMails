@@ -59,6 +59,12 @@ export function createShellStore(ipc: ShellIpc): ShellStore {
   // subscriptions come back, instead of clobbering a later generation's
   // `unlistenFns` or leaking listeners the store no longer owns.
   let generation = 0;
+  // Bumped by every refresh() call and compared against the call's own
+  // captured value once its fetch settles — lets two refreshes started in
+  // the same generation (e.g. a services-changed event firing again before
+  // the first refetch lands) apply only the most recently *started* one's
+  // result, regardless of which one's promise happens to settle first.
+  let latestRefreshSeq = 0;
 
   function getState(): ShellState {
     return state;
@@ -78,9 +84,29 @@ export function createShellStore(ipc: ShellIpc): ShellStore {
     }
   }
 
-  async function refresh(): Promise<void> {
+  // True once some *other* refresh() call has become current since `seq`
+  // was captured, or the generation `gen` belonged to is no longer this
+  // store's — either way, this call's result must not be applied.
+  function isStaleRefresh(gen: number, seq: number): boolean {
+    return gen !== generation || !started || seq !== latestRefreshSeq;
+  }
+
+  /**
+   * Fetches the snapshot and applies it, but only if — once the fetch
+   * settles — this call is still both the caller's generation's (`gen`,
+   * captured by the caller before any `await`) and the most recently
+   * started refresh overall (`seq`). Every caller (bootstrap, the
+   * services-changed listener, and select()/reorder()'s failure paths)
+   * passes the generation it observed at its own call site, not whatever
+   * `generation` happens to hold once this settles.
+   */
+  async function refresh(gen: number): Promise<void> {
+    const seq = ++latestRefreshSeq;
     try {
       const snapshot = await ipc.getSnapshot();
+      if (isStaleRefresh(gen, seq)) {
+        return;
+      }
       // The backend is authoritative for which service is active
       // (`snapshot.activeServiceId`), so every (re)fetch re-syncs
       // `selectedId` to it rather than keeping whatever this store
@@ -89,6 +115,9 @@ export function createShellStore(ipc: ShellIpc): ShellStore {
       // fetches.
       setState({ status: "ready", snapshot, selectedId: snapshot.activeServiceId });
     } catch (caughtError) {
+      if (isStaleRefresh(gen, seq)) {
+        return;
+      }
       setState({ status: "error", message: errorMessage(caughtError) });
     }
   }
@@ -96,7 +125,7 @@ export function createShellStore(ipc: ShellIpc): ShellStore {
   async function bootstrap(gen: number): Promise<void> {
     const results = await Promise.allSettled([
       ipc.onServicesChanged(() => {
-        void refresh();
+        void refresh(gen);
       }),
       ipc.onSelectService(({ id }) => {
         if (state.status === "ready") {
@@ -141,7 +170,7 @@ export function createShellStore(ipc: ShellIpc): ShellStore {
     }
 
     unlistenFns = fulfilledUnlistens;
-    await refresh();
+    await refresh(gen);
   }
 
   function start(): void {
@@ -169,6 +198,11 @@ export function createShellStore(ipc: ShellIpc): ShellStore {
     if (state.status !== "ready" || state.snapshot.configError) {
       return;
     }
+    // Captured synchronously, before `ipc.selectService`'s promise settles —
+    // if the store is stopped (and maybe restarted) in the meantime, this
+    // keeps referring to the generation `select()` was actually called
+    // under, not whatever `generation` holds once the catch runs.
+    const gen = generation;
     setState({ ...state, selectedId: id });
     ipc.selectService(id).catch((caughtError: unknown) => {
       console.error("selectService failed:", errorMessage(caughtError));
@@ -176,7 +210,7 @@ export function createShellStore(ipc: ShellIpc): ShellStore {
       // is restored from the backend's authoritative activeServiceId
       // (see refresh()'s own comment) rather than left pointing at a
       // service the backend never actually selected.
-      void refresh();
+      void refresh(gen);
     });
   }
 
@@ -184,13 +218,15 @@ export function createShellStore(ipc: ShellIpc): ShellStore {
     if (state.status !== "ready" || state.snapshot.configError) {
       return;
     }
+    // See select()'s identical capture above.
+    const gen = generation;
     const { snapshot } = state;
     setState({
       ...state,
       snapshot: { ...snapshot, services: reorderServicesByIds(snapshot.services, ids) },
     });
     ipc.reorderServices(ids).catch(() => {
-      void refresh();
+      void refresh(gen);
     });
   }
 

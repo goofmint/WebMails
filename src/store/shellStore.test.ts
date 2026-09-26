@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createShellStore } from "./shellStore";
 import { createMockShellIpc } from "../test/mockShellIpc";
 import { service, snapshot } from "../test/fixtures";
-import type { ShellIpc } from "../ipc";
+import type { ShellIpc, Snapshot } from "../ipc";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
 interface Deferred<T> {
@@ -343,5 +343,64 @@ describe("createShellStore", () => {
     expect(state.message).toBe("registration failed");
     expect(unlistenServices).toHaveBeenCalledTimes(1);
     expect(getSnapshotSpy).not.toHaveBeenCalled();
+  });
+
+  it("ignores a refresh that resolves after stop()", async () => {
+    const ipc = createMockShellIpc(snapshot({ activeServiceId: "gmail" }));
+    const store = createShellStore(ipc);
+    store.start();
+    await vi.waitFor(() => expect(store.getState().status).toBe("ready"));
+
+    const deferredSnapshot = createDeferred<Snapshot>();
+    ipc.getSnapshot.mockReturnValueOnce(deferredSnapshot.promise);
+    ipc.emitServicesChanged(); // starts a refresh() that awaits our deferred
+
+    store.stop();
+
+    deferredSnapshot.resolve(
+      snapshot({ activeServiceId: "icloud", services: [service({ id: "outlook" })] }),
+    );
+    // The store's own continuation was attached to this promise before this
+    // line runs, so by the time this await resumes, refresh() has already
+    // decided (and, per this test, discarded) its result.
+    await deferredSnapshot.promise;
+
+    const state = store.getState();
+    if (state.status !== "ready") throw new Error("expected ready state");
+    // Unchanged from what bootstrap's own refresh applied before stop() —
+    // not the snapshot the stale, post-stop refresh resolved with.
+    expect(state.selectedId).toBe("gmail");
+    expect(state.snapshot.services).toHaveLength(2);
+  });
+
+  it("keeps the newer result when two overlapping refreshes resolve out of order", async () => {
+    const ipc = createMockShellIpc(snapshot({ activeServiceId: "gmail" }));
+    const store = createShellStore(ipc);
+    store.start();
+    await vi.waitFor(() => expect(store.getState().status).toBe("ready"));
+
+    const olderFetch = createDeferred<Snapshot>();
+    const newerFetch = createDeferred<Snapshot>();
+    ipc.getSnapshot.mockReturnValueOnce(olderFetch.promise);
+    ipc.getSnapshot.mockReturnValueOnce(newerFetch.promise);
+
+    ipc.emitServicesChanged(); // starts the older refresh
+    ipc.emitServicesChanged(); // starts the newer refresh
+
+    // The newer request settles first...
+    newerFetch.resolve(snapshot({ activeServiceId: "icloud" }));
+    await newerFetch.promise;
+
+    const afterNewer = store.getState();
+    if (afterNewer.status !== "ready") throw new Error("expected ready state");
+    expect(afterNewer.selectedId).toBe("icloud");
+
+    // ...and the older one settling afterwards must not overwrite it.
+    olderFetch.resolve(snapshot({ activeServiceId: "outlook" }));
+    await olderFetch.promise;
+
+    const afterOlder = store.getState();
+    if (afterOlder.status !== "ready") throw new Error("expected ready state");
+    expect(afterOlder.selectedId).toBe("icloud");
   });
 });
