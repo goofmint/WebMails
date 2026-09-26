@@ -1,9 +1,12 @@
 /**
  * The settings screen's add-service form (Task 1.12; design.md §2.2.13:
  * "Add form: URL, then name. The profile is pre-filled from
- * `matchRecipe(url).defaultProfile`."). On success, calls `select_service`
- * with the new id (so the newly added service becomes the active one)
- * before resetting to a blank form.
+ * `matchRecipe(url).defaultProfile`."). On success, the form resets to
+ * blank immediately (the service now exists, so it must not stay primed
+ * to create a duplicate), then `select_service` is called with the new
+ * id so the newly added service becomes the active one; a failure from
+ * that follow-up call is reported on its own, separately from an
+ * `add_service` failure.
  */
 
 import { useState, type FormEvent } from "react";
@@ -70,14 +73,25 @@ export function AddServiceForm({ ipc, services }: AddServiceFormProps) {
     }
     setSubmitting(true);
     setError(null);
+    let created: ServiceConfig;
     try {
-      const created = await ipc.addService(
+      created = await ipc.addService(
         trimmedName,
         parsedUrl.toString(),
         profileSelectionToString(profile),
       );
+    } catch (caughtError: unknown) {
+      setError(toCommandError(caughtError));
+      setSubmitting(false);
+      return;
+    }
+    // addService succeeded — the service now exists, so the form must not
+    // stay primed to create a duplicate even if the follow-up
+    // selectService below fails. Reset it first, then handle that failure
+    // on its own.
+    resetForm();
+    try {
       await ipc.selectService(created.id);
-      resetForm();
     } catch (caughtError: unknown) {
       setError(toCommandError(caughtError));
     } finally {

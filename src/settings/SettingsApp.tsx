@@ -29,15 +29,22 @@ export function SettingsApp({ ipc }: SettingsAppProps) {
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
+    // A monotonically increasing id for the request each `refresh()` call
+    // issues. `services-changed` can fire while a previous `getSnapshot`
+    // is still in flight, so two requests can overlap and settle out of
+    // order; only the outcome of the *latest* request may update state.
+    let latestRequestId = 0;
 
     async function refresh(): Promise<void> {
+      latestRequestId += 1;
+      const requestId = latestRequestId;
       try {
         const snapshot = await ipc.getSnapshot();
-        if (!cancelled) {
+        if (!cancelled && requestId === latestRequestId) {
           setState({ status: "ready", snapshot });
         }
       } catch (caughtError: unknown) {
-        if (!cancelled) {
+        if (!cancelled && requestId === latestRequestId) {
           setState({ status: "error", error: toCommandError(caughtError) });
         }
       }

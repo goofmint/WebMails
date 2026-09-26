@@ -129,4 +129,28 @@ describe("AddServiceForm", () => {
     expect(ipc.selectService).not.toHaveBeenCalled();
     expect(urlInput().value).toBe("https://example.com/");
   });
+
+  it("resets the form after a successful add even when select_service fails", async () => {
+    const ipc = renderForm();
+    ipc.selectService.mockRejectedValueOnce({ kind: "config", message: "cannot select service" });
+
+    fireEvent.change(urlInput(), { target: { value: "https://mail.google.com/mail/u/0/" } });
+    fireEvent.change(nameInput(), { target: { value: "Personal Gmail" } });
+    fireEvent.click(submitButton());
+
+    // The service was created — its form must not stay primed to submit
+    // add_service again with the same values.
+    await waitFor(() => {
+      expect(urlInput().value).toBe("");
+    });
+    expect(nameInput().value).toBe("");
+    expect(ipc.addService).toHaveBeenCalledWith(
+      "Personal Gmail",
+      "https://mail.google.com/mail/u/0/",
+      "default",
+    );
+
+    // The selectService failure is reported on its own.
+    expect(await screen.findByRole("alert")).toHaveTextContent("cannot select service");
+  });
 });

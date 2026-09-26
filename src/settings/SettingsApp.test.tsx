@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { act } from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { SettingsApp } from "./SettingsApp";
 import { createMockSettingsIpc } from "../test/mockSettingsIpc";
 import { service, snapshot } from "../test/fixtures";
+import type { Snapshot } from "../ipc";
 
 describe("SettingsApp", () => {
   it("fetches the snapshot on mount and renders the service list", async () => {
@@ -27,6 +29,40 @@ describe("SettingsApp", () => {
     await waitFor(() => {
       expect(screen.getByText("Outlook")).toBeInTheDocument();
     });
+    expect(screen.queryByText("Gmail")).not.toBeInTheDocument();
+  });
+
+  it("ignores a stale getSnapshot response that resolves after a newer request", async () => {
+    const ipc = createMockSettingsIpc(snapshot());
+
+    let resolveFirst: ((value: Snapshot) => void) | undefined;
+    ipc.getSnapshot.mockReturnValueOnce(
+      new Promise<Snapshot>((resolve) => {
+        resolveFirst = resolve;
+      }),
+    );
+
+    render(<SettingsApp ipc={ipc} />);
+    // The mount's initial refresh is now pending on `resolveFirst`.
+
+    ipc.getSnapshot.mockResolvedValueOnce(
+      snapshot({ services: [service({ id: "outlook", name: "Outlook" })] }),
+    );
+    ipc.emitServicesChanged();
+
+    await waitFor(() => {
+      expect(screen.getByText("Outlook")).toBeInTheDocument();
+    });
+
+    // The stale first request now resolves with an older snapshot; being
+    // the older (no longer latest) request, it must not overwrite the
+    // newer state already rendered above.
+    await act(async () => {
+      resolveFirst?.(snapshot({ services: [service({ id: "gmail", name: "Gmail" })] }));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("Outlook")).toBeInTheDocument();
     expect(screen.queryByText("Gmail")).not.toBeInTheDocument();
   });
 
