@@ -26,9 +26,16 @@ pub use validate::ReportError;
 /// injected agent (design.md §2.2.6).
 ///
 /// `webview.label()` must equal `svc-<serviceId>` for the report's own
-/// `serviceId`, and that service must exist in the live configuration —
-/// [`validate::validate`] checks both, plus every other design.md
-/// §2.2.6 rule, and rejects on the first violation.
+/// `serviceId`, that service must exist in the live configuration, and
+/// the webview's *current* URL (`webview.url()`) must share the
+/// service's currently configured origin — [`validate::validate`]
+/// checks all of that, plus every other design.md §2.2.6 rule, and
+/// rejects on the first violation.
+///
+/// `webview.url()` itself can fail; when it does, the report is dropped
+/// the same way a validation rejection is (logged at debug level, no
+/// fallback origin substituted, still `Ok(())`) rather than calling
+/// [`validate::validate`] with anything but the real current URL.
 ///
 /// The service's currently configured URL is looked up from
 /// [`ServiceManager`]'s live `Config` (`services::ServiceManager::
@@ -55,12 +62,24 @@ pub async fn report_unread(
     let label = webview.label().to_string();
     let requested_service_id = report.service_id.clone();
 
+    let caller_url = match webview.url() {
+        Ok(url) => url,
+        Err(err) => {
+            tracing::debug!(
+                service_id = %requested_service_id,
+                error = %err,
+                "failed to read calling webview's URL; dropping report"
+            );
+            return Ok(());
+        }
+    };
+
     let service_url = match ServiceId::new(requested_service_id.clone()) {
         Ok(id) => services.inner().service_url(&id).await,
         Err(_) => None,
     };
 
-    match validate::validate(report, &label, |_id| service_url) {
+    match validate::validate(report, &label, &caller_url, |_id| service_url) {
         Ok(valid_report) => {
             // Task 2.3's `unread` status store will consume `valid_report`
             // here once it exists; until then, accepting it is a no-op

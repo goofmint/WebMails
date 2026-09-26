@@ -366,12 +366,13 @@ impl ServiceManager {
                 .granted_capability_origins
                 .entry(id.clone())
                 .or_default()
-                .insert(origin);
+                .insert(origin.clone());
         }
 
         let init_script = match capability::build_injection_script(
             &service.id,
             &service.url,
+            &origin,
             ready.config.settings.reconcile_interval_seconds,
         ) {
             Ok(script) => script,

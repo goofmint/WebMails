@@ -155,7 +155,18 @@ struct InjectedConfig<'a> {
 /// `window.__ELUMA__ = {json};\n{AGENT_JS}`, where `{json}` is
 /// `serde_json`-serialized (camelCase keys) and `{AGENT_JS}` is
 /// [`crate::agent::AGENT_JS`], the agent bundle `pnpm build:agent`
-/// produces.
+/// produces — both guarded so they only run when `window.location.origin`
+/// (evaluated fresh every time Tauri re-runs the init script, including
+/// after the webview navigates) still matches `origin`, the service's
+/// configured origin at webview-creation time (the same string
+/// [`ensure_capability`]'s caller scopes the runtime capability to).
+/// Without this guard, a navigation off the service's origin would still
+/// hand the agent bundle and its config to whatever page the webview is
+/// now showing, even though `report_unread`'s capability grant would
+/// reject the resulting calls.
+///
+/// `origin` is serialized with `serde_json`, never string-concatenated
+/// raw, so it cannot break out of the generated script.
 ///
 /// `reconcile_interval_seconds` is `Config.settings.reconcile_interval_seconds`
 /// (design.md §2.2.1) and is converted to milliseconds here, once, in one
@@ -163,6 +174,7 @@ struct InjectedConfig<'a> {
 pub fn build_injection_script(
     id: &ServiceId,
     url: &Url,
+    origin: &str,
     reconcile_interval_seconds: u32,
 ) -> Result<String, serde_json::Error> {
     let service_id = id.as_str();
@@ -174,7 +186,10 @@ pub fn build_injection_script(
         reconcile_interval_ms: u64::from(reconcile_interval_seconds) * 1000,
     };
     let json = serde_json::to_string(&config)?;
-    Ok(format!("window.__ELUMA__ = {json};\n{AGENT_JS}"))
+    let origin_json = serde_json::to_string(origin)?;
+    Ok(format!(
+        "if (window.location.origin === {origin_json}) {{\nwindow.__ELUMA__ = {json};\n{AGENT_JS}\n}}"
+    ))
 }
 
 #[cfg(test)]
@@ -248,20 +263,30 @@ mod tests {
     fn injection_script_has_the_expected_shape() {
         let service_id = id("gmail-personal");
         let url = Url::parse("https://mail.google.com/mail/u/0/").expect("valid url");
-        let script = build_injection_script(&service_id, &url, 60).expect("build script");
+        let origin = "https://mail.google.com";
+        let script = build_injection_script(&service_id, &url, origin, 60).expect("build script");
 
-        let expected_prefix = "window.__ELUMA__ = ";
-        assert!(script.starts_with(expected_prefix));
+        let origin_json = serde_json::to_string(origin).expect("serialize origin");
+        let expected_guard_prefix = format!("if (window.location.origin === {origin_json}) {{\n");
+        let expected_config_prefix = "window.__ELUMA__ = ";
+
         assert!(
-            script.ends_with(AGENT_JS),
-            "script must end with AGENT_JS verbatim"
+            script.starts_with(&expected_guard_prefix),
+            "script must open with the origin guard: {script}"
+        );
+        assert!(
+            script.ends_with(&format!("{AGENT_JS}\n}}")),
+            "script must end with AGENT_JS followed by the guard's closing brace"
         );
 
-        let json_part = script
-            .strip_prefix(expected_prefix)
+        let after_guard = script
+            .strip_prefix(&expected_guard_prefix)
+            .expect("guard prefix present");
+        let json_part = after_guard
+            .strip_prefix(expected_config_prefix)
             .and_then(|rest| rest.split_once(";\n"))
             .map(|(json, _agent)| json)
-            .expect("script has `window.__ELUMA__ = {json};\\n{AGENT_JS}` shape");
+            .expect("script has `window.__ELUMA__ = {json};\\n{AGENT_JS}` shape inside the guard");
 
         let value: serde_json::Value = serde_json::from_str(json_part).expect("valid json");
         assert_eq!(value["serviceId"], "gmail-personal");
@@ -284,21 +309,64 @@ mod tests {
     }
 
     #[test]
+    fn injection_script_origin_guard_is_json_escaped() {
+        // The origin must be serialized with `serde_json`, never
+        // string-concatenated raw — this asserts the guard uses the
+        // JSON-quoted form (`serde_json::to_string`), not a bare/raw
+        // interpolation of the origin string.
+        let service_id = id("gmail-personal");
+        let url = Url::parse("https://mail.google.com/").expect("valid url");
+        let origin = "https://mail.google.com";
+        let script = build_injection_script(&service_id, &url, origin, 30).expect("build script");
+
+        let origin_json = serde_json::to_string(origin).expect("serialize origin");
+        assert_eq!(origin_json, "\"https://mail.google.com\"");
+        assert!(
+            script.contains(&format!("window.location.origin === {origin_json}")),
+            "script must compare against the JSON-escaped origin: {script}"
+        );
+        // A raw, unquoted interpolation must never appear.
+        assert!(!script.contains(&format!("window.location.origin === {origin}")));
+    }
+
+    #[test]
     fn reconcile_interval_seconds_converts_to_milliseconds() {
         let service_id = id("icloud");
         let url = Url::parse("https://www.icloud.com/mail").expect("valid url");
-        let script = build_injection_script(&service_id, &url, 1).expect("build script");
+        let script = build_injection_script(&service_id, &url, "https://www.icloud.com", 1)
+            .expect("build script");
         assert!(script.contains("\"reconcileIntervalMs\":1000"));
     }
 
     #[test]
     fn injection_script_never_duplicates_agent_js_content() {
         // A regression guard: the script must contain AGENT_JS exactly
-        // once, as the tail — never string-concatenated more than once,
-        // and never with the JSON values substituted anywhere inside it.
+        // once, as the tail (inside the guard) — never
+        // string-concatenated more than once, and never with the JSON
+        // values substituted anywhere inside it.
         let service_id = id("gmail-personal");
         let url = Url::parse("https://mail.google.com/").expect("valid url");
-        let script = build_injection_script(&service_id, &url, 30).expect("build script");
+        let script = build_injection_script(&service_id, &url, "https://mail.google.com", 30)
+            .expect("build script");
         assert_eq!(script.matches(AGENT_JS).count(), 1);
+    }
+
+    #[test]
+    fn injection_script_does_not_apply_config_or_agent_outside_the_guard() {
+        // Everything after the guard's opening brace and before its
+        // closing brace is exactly `window.__ELUMA__ = {json};\n{AGENT_JS}`
+        // — nothing runs unguarded.
+        let service_id = id("gmail-personal");
+        let url = Url::parse("https://mail.google.com/").expect("valid url");
+        let origin = "https://mail.google.com";
+        let script = build_injection_script(&service_id, &url, origin, 30).expect("build script");
+        let origin_json = serde_json::to_string(origin).expect("serialize origin");
+        let guard_open = format!("if (window.location.origin === {origin_json}) {{\n");
+        let body = script
+            .strip_prefix(&guard_open)
+            .and_then(|rest| rest.strip_suffix("\n}"))
+            .expect("script body is wrapped exactly by the origin guard");
+        assert!(body.starts_with("window.__ELUMA__ = "));
+        assert!(body.ends_with(AGENT_JS));
     }
 }
