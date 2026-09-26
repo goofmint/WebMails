@@ -52,6 +52,7 @@ pub fn run() {
             commands::update_settings,
             commands::open_settings,
             commands::reload_service,
+            commands::get_diagnostics,
             agent_bridge::report_unread,
         ])
         .setup(|app| {

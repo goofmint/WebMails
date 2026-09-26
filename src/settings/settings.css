@@ -50,3 +50,45 @@ body {
   font-size: 12px;
   font-style: italic;
 }
+
+.diagnostics__table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.diagnostics__table th,
+.diagnostics__table td {
+  border-bottom: 1px solid #ddd;
+  padding: 4px 8px;
+  text-align: left;
+}
+
+.diagnostics__error {
+  color: #b00020;
+}
+
+.diagnostics__badge {
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.diagnostics__badge--stale {
+  background: #e0e0e0;
+  color: #555;
+}
+
+.diagnostics__badge--needsAttention {
+  background: #fff3cd;
+  color: #7a5b00;
+}
+
+.diagnostics__badge--ok {
+  background: #e6f4ea;
+  color: #1e7e34;
+}
+
+.diagnostics__badge--loading {
+  background: #eee;
+  color: #888;
+}

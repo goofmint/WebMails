@@ -79,8 +79,16 @@ impl<'de> Deserialize<'de> for SeenRing {
 /// 3.2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StalenessStats {
+    /// How many times this service has been marked `Stale` (design.md
+    /// §2.2.8: incremented on every `MarkStale` action).
     pub count: u32,
-    /// Unix epoch milliseconds of the last report, if any has been seen.
+    /// Unix epoch milliseconds of the moment `count` was last
+    /// incremented — i.e. the last time this service was marked `Stale`
+    /// (design.md §2.2.8), **not** the last time a report was received.
+    /// `None` until the first stale episode. Task 3.3's `get_diagnostics`
+    /// reports this as a service's "last stale time"; it computes "last
+    /// report age" from a separate, unpersisted source (the liveness
+    /// machine's own last-report timing), never from this field.
     pub last_at: Option<u64>,
 }
 

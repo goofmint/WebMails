@@ -13,6 +13,7 @@
     "allow-update-settings",
     "allow-open-settings",
     "allow-reload-service",
+    "allow-get-diagnostics",
     "core:event:default",
     "core:window:allow-set-focus"
   ]

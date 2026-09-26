@@ -113,6 +113,15 @@ Exit criterion (SPEC §16): badges still correct after 2 hours minimised, on bot
 
 - [ ] With at least one service configured, run `pmset -g assertions` while Eluma runs (e.g. minimised or backgrounded) and confirm a `PreventUserIdleSystemSleep` (or equivalent `NSActivityUserInitiated`-backed) assertion is listed for the Eluma process, plus the `app_nap: acquired activity assertion` / `app_nap: released activity assertion` log lines appear exactly once each as the last service is added/removed (macOS)
 
+### Task 3.3 — Diagnostics view
+
+For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/fail, with notes) before checking it off.
+
+- [ ] From the settings window (`#/settings`), the Diagnostics section lists every configured service with its status, last report age, stale count and last stale time, and its "Refresh" button re-fetches successfully via `invoke("get_diagnostics")` (macOS)
+- [ ] Same, Windows 11
+- [ ] `window.__TAURI_INTERNALS__.invoke("get_diagnostics")` from a `svc-<id>` service webview's DevTools console is rejected (no `allow-get-diagnostics` permission there) (macOS)
+- [ ] Same rejection, Windows 11
+
 ## M4 — Notifications
 
 Exit criterion (SPEC §16): iCloud fires a native notification with Eluma in the background.

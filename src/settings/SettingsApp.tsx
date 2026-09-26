@@ -12,6 +12,7 @@ import type { CommandError, SettingsIpc, Snapshot } from "../ipc";
 import { toCommandError } from "../ipc";
 import { ServiceList } from "./ServiceList";
 import { AddServiceForm } from "./AddServiceForm";
+import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import "./settings.css";
 
 export interface SettingsAppProps {
@@ -115,6 +116,7 @@ export function SettingsApp({ ipc }: SettingsAppProps) {
       <h1>Settings</h1>
       <ServiceList ipc={ipc} services={snapshot.services} />
       <AddServiceForm ipc={ipc} services={snapshot.services} />
+      <DiagnosticsPanel />
     </div>
   );
 }

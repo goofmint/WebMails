@@ -99,6 +99,17 @@ struct ServiceLiveness {
     /// now-stale action rather than reloading/recreating a service that
     /// has already recovered.
     generation: u64,
+    /// The time (ms) an actual report last arrived for this service — set
+    /// only by [`LivenessMachine::touch`] (called when a validated report
+    /// arrives, design.md §2.2.6), never by `tick`'s own auto-registration
+    /// of a newly-seen id (which seeds [`Self::last_report_ms`] as a
+    /// staleness baseline, not a report). `None` means this service has
+    /// never actually reported since this machine started tracking it —
+    /// distinct from `last_report_ms`, which task 3.3's `get_diagnostics`
+    /// must not use for "last report age", since that field's baseline can
+    /// predate any real report (design.md §2.2.12: "services never
+    /// reported show null age").
+    last_real_report_ms: Option<u64>,
 }
 
 impl ServiceLiveness {
@@ -107,6 +118,7 @@ impl ServiceLiveness {
             last_report_ms: now_ms,
             phase: Phase::Monitoring,
             generation: 0,
+            last_real_report_ms: None,
         }
     }
 }
@@ -165,6 +177,7 @@ impl LivenessMachine {
             id.clone(),
             ServiceLiveness {
                 generation,
+                last_real_report_ms: Some(report_ms),
                 ..ServiceLiveness::fresh(report_ms)
             },
         );
@@ -184,6 +197,15 @@ impl LivenessMachine {
     /// this for.
     pub fn generation(&self, id: &ServiceId) -> Option<u64> {
         self.services.get(id).map(|liveness| liveness.generation)
+    }
+
+    /// The time (ms) an actual report last arrived for `id`, or `None` if
+    /// `id` is untracked or has never reported (task 3.3's
+    /// `get_diagnostics`; see [`ServiceLiveness::last_real_report_ms`]'s
+    /// doc for why this — not [`Self::tick`]'s internal staleness
+    /// baseline — is the right source for "last report age").
+    pub fn last_real_report_ms(&self, id: &ServiceId) -> Option<u64> {
+        self.services.get(id).and_then(|l| l.last_real_report_ms)
     }
 
     /// Evaluates every service named in `statuses` at `now_ms` and returns
@@ -629,6 +651,52 @@ mod tests {
                 Action::Reload { id: id("gmail") },
             ]
         );
+    }
+
+    // --- last_real_report_ms (task 3.3) -----------------------------------
+
+    #[test]
+    fn last_real_report_ms_is_none_for_an_untracked_service() {
+        let machine = LivenessMachine::new();
+        assert_eq!(machine.last_real_report_ms(&id("gmail")), None);
+    }
+
+    #[test]
+    fn last_real_report_ms_is_none_after_ticks_own_auto_registration_alone() {
+        // A service seen for the first time by `tick` (e.g. `Loading`,
+        // right after webview creation) is tracked with a staleness
+        // baseline, but it has never actually reported.
+        let mut machine = LivenessMachine::new();
+        let s = statuses(&[("gmail", ServiceStatus::Loading)]);
+        machine.tick(BASE, &s);
+        assert!(machine.is_tracked(&id("gmail")));
+        assert_eq!(machine.last_real_report_ms(&id("gmail")), None);
+    }
+
+    #[test]
+    fn touch_sets_last_real_report_ms() {
+        let mut machine = LivenessMachine::new();
+        machine.touch(&id("gmail"), BASE);
+        assert_eq!(machine.last_real_report_ms(&id("gmail")), Some(BASE));
+    }
+
+    #[test]
+    fn touch_never_moves_last_real_report_ms_backwards() {
+        let mut machine = LivenessMachine::new();
+        machine.touch(&id("gmail"), 100_000);
+        machine.touch(&id("gmail"), 50_000);
+        assert_eq!(machine.last_real_report_ms(&id("gmail")), Some(100_000));
+    }
+
+    #[test]
+    fn last_real_report_ms_survives_a_later_tick_auto_registration_pass() {
+        // Once a real report has landed, later ticks (which only insert a
+        // fresh baseline for ids *not yet* tracked) must not erase it.
+        let mut machine = LivenessMachine::new();
+        machine.touch(&id("gmail"), BASE);
+        let s = statuses(&[("gmail", ServiceStatus::Ok { count: 1 })]);
+        machine.tick(BASE + 1, &s);
+        assert_eq!(machine.last_real_report_ms(&id("gmail")), Some(BASE));
     }
 
     #[test]

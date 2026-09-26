@@ -175,13 +175,12 @@ fn is_current(tagged: &Tagged, current_generation: Option<u64>) -> bool {
     current_generation == Some(tagged.generation)
 }
 
-/// Whether a freshly received report's `now_ms` should replace `existing`
-/// (`state.staleness[id].last_at`): only if there was no previous value,
-/// or the new one is not older (design.md §2.2.2) — reports can arrive
-/// out of order (e.g. two concurrent `report_unread` calls), and letting
-/// an earlier one overwrite a later one would make a service look staler
-/// than it actually is. Pure, unit-tested directly below;
-/// [`LivenessRuntime::record_report`] is its only production caller.
+/// Whether a freshly decided stale episode's `now_ms` should replace
+/// `existing` (`state.staleness[id].last_at` — the time `count` was last
+/// incremented, design.md §2.2.2, §9.4; not a report time, see
+/// [`StalenessStats::last_at`]'s own doc): only if there was no previous
+/// value, or the new one is not older. Pure, unit-tested directly below;
+/// [`LivenessRuntime::apply_mark_stale`] is its only production caller.
 fn is_newer_last_at(now_ms: u64, existing: Option<u64>) -> bool {
     match existing {
         None => true,
@@ -310,48 +309,63 @@ impl LivenessRuntime {
             }
         });
 
+        // A fresh clock read for *this* stale episode's timestamp
+        // (`state.staleness[id].last_at`, task 3.3: "the time count was
+        // last incremented" — see `StalenessStats::last_at`'s own doc).
+        // `count` is incremented unconditionally: it is a plain tally, not
+        // a fabricated value, so a transient clock failure (logged below,
+        // never a made-up timestamp — project rule: no fallback defaults)
+        // must not suppress it.
+        let now_result = self.clock.now_ms();
+        let now_ms = now_result.as_ref().ok().copied();
         if let Err(err) = self.state.update(|state| {
             let stats = state.staleness.entry(id.clone()).or_insert(StalenessStats {
                 count: 0,
                 last_at: None,
             });
             stats.count += 1;
+            if let Some(now_ms) = now_ms {
+                if is_newer_last_at(now_ms, stats.last_at) {
+                    stats.last_at = Some(now_ms);
+                }
+            }
         }) {
             tracing::error!(service_id = %id, "liveness: failed to record staleness count: {err}");
+        }
+        if let Err(err) = now_result {
+            tracing::error!(service_id = %id, "liveness: clock unavailable, staleness count incremented without a timestamp: {err}");
         }
     }
 
     /// Records that `id` is alive as of now: resets the liveness state
-    /// machine's tracking for `id` and updates `state.staleness[id].
-    /// last_at` (design.md §2.2.2, §2.2.6). Called by
+    /// machine's tracking for `id` (design.md §2.2.6). Called by
     /// `agent_bridge::report_unread` immediately after a report validates
     /// — the design's "liveness uses the time Rust receives the report",
     /// using this runtime's own [`Clock`] rather than the report's
-    /// `observedAt`.
+    /// `observedAt`. Never touches `state.staleness[id].last_at` — that
+    /// field tracks stale episodes only (see [`Self::apply_mark_stale`],
+    /// `crate::state::StalenessStats::last_at`'s own doc); a service's
+    /// last *report* time lives only in the in-memory liveness machine
+    /// ([`Self::last_real_report_ms`]), never persisted.
     pub fn record_report(&self, id: &ServiceId) {
-        let now_ms = {
-            let mut machine = self.lock_machine();
-            evaluate_touch(self.clock.as_ref(), &mut machine, id)
-        };
-        let Some(now_ms) = now_ms else {
-            // The clock errored: `evaluate_touch` already logged it, and
-            // already left `machine` untouched. Skipping the `state`
-            // update too is the same "no fallback time" rule applied to
-            // `last_at` (project rule: no fallback defaults).
-            return;
-        };
+        let mut machine = self.lock_machine();
+        evaluate_touch(self.clock.as_ref(), &mut machine, id);
+    }
 
-        if let Err(err) = self.state.update(|state| {
-            let stats = state.staleness.entry(id.clone()).or_insert(StalenessStats {
-                count: 0,
-                last_at: None,
-            });
-            if is_newer_last_at(now_ms, stats.last_at) {
-                stats.last_at = Some(now_ms);
-            }
-        }) {
-            tracing::error!(service_id = %id, "liveness: failed to record last report time: {err}");
-        }
+    /// The current time from this runtime's own [`Clock`] (task 3.3's
+    /// `get_diagnostics`: the same clock source [`Self::tick_once`] and
+    /// [`Self::record_report`] already use — never `SystemTime::now()`
+    /// directly, project rule).
+    pub fn now_ms(&self) -> Result<u64, ClockError> {
+        self.clock.now_ms()
+    }
+
+    /// The time (ms) `id` last actually reported, or `None` if it never
+    /// has (task 3.3's `get_diagnostics`; see [`LivenessMachine::
+    /// last_real_report_ms`]'s own doc for why this is the right source,
+    /// not `state.staleness[id].last_at`, for "last report age").
+    pub fn last_real_report_ms(&self, id: &ServiceId) -> Option<u64> {
+        self.lock_machine().last_real_report_ms(id)
     }
 
     /// Recovers from a poisoned lock the same way `ServiceManager::
