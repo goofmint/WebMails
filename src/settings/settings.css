@@ -1,0 +1,52 @@
+/* Task 1.12 — settings window layout (design.md §2.2.13). */
+
+body {
+  margin: 0;
+}
+
+.settings {
+  box-sizing: border-box;
+  padding: 16px;
+  font-family: sans-serif;
+}
+
+.settings__error {
+  color: #b00020;
+}
+
+.service-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.service-list__item {
+  border-bottom: 1px solid #ddd;
+  padding: 8px 0;
+}
+
+.service-list__summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.profile-field {
+  border: none;
+  padding: 0;
+  margin: 8px 0;
+}
+
+.profile-field__option {
+  display: block;
+}
+
+.profile-field__error {
+  color: #b00020;
+  font-size: 12px;
+}
+
+.edit-service-form__notice {
+  font-size: 12px;
+  font-style: italic;
+}

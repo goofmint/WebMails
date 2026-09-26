@@ -71,6 +71,15 @@ For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/
 
 - [ ] Drag-and-drop reorder works in the real shell (macOS/Windows)
 
+### Task 1.12 — Settings window: service CRUD
+
+For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/fail, with notes) before checking it off.
+
+- [ ] Launch the app (`pnpm tauri dev`), click the sidebar's "+" or gear button, and the settings window opens showing the `#/settings` screen (macOS)
+- [ ] Same, Windows 11
+- [ ] Adding a URL in the settings window's add form produces a usable mail tab: the service appears in the sidebar, becomes the active tab, and its page loads and can be signed into (macOS)
+- [ ] Same, Windows 11
+
 ## M2 — Unread
 
 Exit criterion (SPEC §16): N Gmail accounts plus iCloud show live counts while the window is in the background.

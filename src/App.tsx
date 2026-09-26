@@ -1,17 +1,16 @@
 import { Sidebar } from "./components/Sidebar";
 import { ShellStoreProvider } from "./store/ShellStoreProvider";
-import { shellIpc } from "./ipc";
+import { shellIpc, settingsIpc } from "./ipc";
+import { SettingsApp } from "./settings/SettingsApp";
+import { isSettingsRoute } from "./settings/route";
 
-// The settings screen itself is Task 1.12's `#/settings` route; this shell
-// webview only needs to recognize that route and render nothing for it —
-// the settings window loads the same bundle, but at its own `index.html`
-// entry with a hash Rust already sets in commands/mod.rs's
-// `SETTINGS_WINDOW_PATH`.
-const SETTINGS_ROUTE_PREFIX = "#/settings";
-
+// The settings window loads the same bundle as the shell, but at its own
+// `index.html` entry with a hash Rust already sets in commands/mod.rs's
+// `SETTINGS_WINDOW_PATH` — `isSettingsRoute` (Task 1.12) is the pure
+// function that recognizes it.
 function App() {
-  if (window.location.hash.startsWith(SETTINGS_ROUTE_PREFIX)) {
-    return null;
+  if (isSettingsRoute(window.location.hash)) {
+    return <SettingsApp ipc={settingsIpc} />;
   }
 
   return (
