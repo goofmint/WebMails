@@ -55,7 +55,7 @@ use crate::error::{AppError, AppResult};
 use crate::host::{PageLoadHandler, ServiceWebviewSpec, WebviewHost};
 use crate::platform::app_nap::AppNapGuard;
 use crate::profile::{self, PlatformProfileBackend, ProfileBackend, ProfileKey};
-use crate::state::StateStore;
+use crate::state::{StalenessStats, StateStore};
 use crate::unread::{emit_if_changed, ServiceStatus, StatusChanged, StatusStore};
 
 /// Delay between each service's staggered creation at startup (design.md
@@ -839,6 +839,40 @@ impl ServiceManager {
         }
     }
 
+    /// A read-only snapshot of everything `get_diagnostics` (Task 3.3)
+    /// needs from this manager: configured services in sidebar order (the
+    /// same order [`Self::snapshot`] uses), their `unread` status, and the
+    /// persisted staleness counters (design.md §2.2.2, §9.4). `services`
+    /// and `staleness` are both empty in the `Failed` state, matching
+    /// [`Self::snapshot`]'s own "nothing ever started" contract — unlike
+    /// that method, this one can fail: reading `staleness` goes through
+    /// [`StateStore::read`], which only errors on a poisoned mutex (an
+    /// earlier panic while holding it), and that is propagated rather than
+    /// papered over with an empty map (project rule: no fallback
+    /// defaults). `commands::diagnostics::build_diagnostics` is the pure
+    /// function that turns this, plus the liveness runtime's own
+    /// last-report timing (kept separate from this manager — see that
+    /// module's doc), into the wire DTO.
+    pub async fn diagnostics_snapshot(&self) -> AppResult<DiagnosticsSnapshot> {
+        let guard = self.inner.lock().await;
+        let (services, staleness) = match &*guard {
+            ManagerState::Failed(_) => (Vec::new(), BTreeMap::new()),
+            ManagerState::Ready(ready) => {
+                let staleness = ready.state.read(|state| state.staleness.clone())?;
+                (ready.config.services.clone(), staleness)
+            }
+        };
+        drop(guard);
+
+        let statuses = self.with_status_store(|store| store.statuses().clone());
+
+        Ok(DiagnosticsSnapshot {
+            services,
+            statuses,
+            staleness,
+        })
+    }
+
     /// Removes an existing service (design.md §2.2.5): applies
     /// [`ConfigEdit::RemoveService`] — which, as an ordinary part of the
     /// edit-and-reconcile path, destroys the live webview and activates
@@ -1140,6 +1174,14 @@ pub struct ManagerSnapshot {
     /// the `Failed` state too, alongside empty `services` and no
     /// `settings` (Task 1.10; design.md §2.2.12's `activeServiceId`).
     pub active: Option<ServiceId>,
+}
+
+/// [`ServiceManager::diagnostics_snapshot`]'s return value (Task 3.3; see
+/// that method's own doc for the per-field contract).
+pub struct DiagnosticsSnapshot {
+    pub services: Vec<ServiceConfig>,
+    pub statuses: HashMap<ServiceId, ServiceStatus>,
+    pub staleness: BTreeMap<ServiceId, StalenessStats>,
 }
 
 /// [`ServiceManager::with_notify_state`]'s return value: a service's

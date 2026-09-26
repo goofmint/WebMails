@@ -22,6 +22,7 @@ fn main() {
             "update_settings",
             "open_settings",
             "reload_service",
+            "get_diagnostics",
             // Task 2.1 (design.md §2.2.6): granted only through the runtime
             // per-service capability (Task 2.2), never through shell.json.
             "report_unread",

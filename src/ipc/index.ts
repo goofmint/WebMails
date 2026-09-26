@@ -17,6 +17,8 @@ export type {
   Snapshot,
   ServicePatchInput,
   CommandError,
+  ServiceDiagnostic,
+  Diagnostics,
 } from "./types";
 export { toCommandError } from "./errors";
 import type { Snapshot, ServiceStatus, ServiceConfig, ServicePatchInput } from "./types";

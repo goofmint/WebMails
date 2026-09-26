@@ -12,7 +12,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import type { ServiceConfig, ServicePatchInput, Snapshot } from "./types";
+import type { Diagnostics, ServiceConfig, ServicePatchInput, Snapshot } from "./types";
 
 /** `get_snapshot` — no input, `Snapshot` output (design.md §2.2.12). */
 export async function getSnapshot(): Promise<Snapshot> {
@@ -79,4 +79,13 @@ export async function updateService(id: string, patch: ServicePatchInput): Promi
  */
 export async function removeService(id: string, deleteSessionData: boolean): Promise<void> {
   await invoke<void>("remove_service", { id, deleteSessionData });
+}
+
+/**
+ * `get_diagnostics` — no input, `Diagnostics` output (Task 3.3; design.md
+ * §2.2.12, §9.4): per-configured-service status, last report age and
+ * staleness history, for the settings window's Diagnostics panel.
+ */
+export async function getDiagnostics(): Promise<Diagnostics> {
+  return invoke<Diagnostics>("get_diagnostics");
 }

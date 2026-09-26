@@ -110,6 +110,31 @@ export interface ServicePatchInput {
 }
 
 /**
+ * One `get_diagnostics` row (`ServiceDiagnosticDto` in
+ * src-tauri/src/commands/diagnostics.rs, Task 3.3; design.md §2.2.12,
+ * §9.4). `status` reuses the same `ServiceStatus` shape as `Snapshot`.
+ * `lastReportAgeMs` is `null` for a service that has never reported —
+ * never a fabricated number — and `lastStaleAt` is `null` before its
+ * first stale episode.
+ */
+export interface ServiceDiagnostic {
+  readonly serviceId: string;
+  readonly name: string;
+  readonly status: ServiceStatus;
+  readonly lastReportAgeMs: number | null;
+  readonly staleCount: number;
+  readonly lastStaleAt: number | null;
+}
+
+/**
+ * `get_diagnostics`'s response (`DiagnosticsDto`): one row per configured
+ * service, in the same sidebar order `Snapshot.services` uses.
+ */
+export interface Diagnostics {
+  readonly services: readonly ServiceDiagnostic[];
+}
+
+/**
  * The `{ kind, message }` shape every `AppError` serializes as
  * (src-tauri/src/error.rs, design.md §5.2) — what an `invoke()` call
  * rejects with when a command fails. See `./errors.ts`'s `toCommandError`
