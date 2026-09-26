@@ -109,6 +109,25 @@ pub enum InstallOverrideFileError {
     Io(#[from] std::io::Error),
     #[error("could not normalize icon override file: {0}")]
     Normalize(#[from] NormalizeError),
+    #[error("icon override file is larger than {MAX_OVERRIDE_FILE_BYTES} bytes")]
+    TooLarge,
+}
+
+/// Largest icon override file read into memory before decoding.
+pub const MAX_OVERRIDE_FILE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Reads at most `limit` bytes of `path`; a longer file is rejected rather
+/// than truncated.
+fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, InstallOverrideFileError> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(limit + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(InstallOverrideFileError::TooLarge);
+    }
+    Ok(bytes)
 }
 
 /// Builds the ordered list of sources to try for one service (design.md
@@ -413,7 +432,7 @@ impl IconService {
         id: &ServiceId,
         source_path: &Path,
     ) -> Result<PathBuf, InstallOverrideFileError> {
-        let bytes = std::fs::read(source_path)?;
+        let bytes = read_bounded(source_path, MAX_OVERRIDE_FILE_BYTES)?;
         let png = normalize::normalize_to_png(&bytes)?;
         let relative = paths::icon_override_relative_path(id);
         let destination = self.data_dir.join(&relative);
@@ -1249,5 +1268,17 @@ mod tests {
             service.cached_icon(&service_id).is_none(),
             "forget must leave no cache, even after the in-flight resolution finishes"
         );
+    }
+
+    #[test]
+    fn read_bounded_rejects_a_file_over_the_limit_and_accepts_one_at_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("icon.bin");
+        std::fs::write(&path, vec![0_u8; 11]).expect("write");
+        assert!(matches!(
+            read_bounded(&path, 10),
+            Err(InstallOverrideFileError::TooLarge)
+        ));
+        assert_eq!(read_bounded(&path, 11).expect("at limit").len(), 11);
     }
 }
