@@ -115,6 +115,80 @@ fn evaluate_touch(clock: &dyn Clock, machine: &mut LivenessMachine, id: &Service
     }
 }
 
+/// The [`ServiceId`] an [`Action`] names — every variant has exactly one,
+/// under the same field name.
+fn action_service_id(action: &Action) -> &ServiceId {
+    match action {
+        Action::MarkStale { id } | Action::Reload { id } | Action::Recreate { id } => id,
+    }
+}
+
+/// An [`Action`] paired with the generation ([`LivenessMachine::
+/// generation`]) its service had at the exact moment `tick` decided it —
+/// read under the same `machine` lock `tick` itself just ran under, so it
+/// reflects that decision precisely, with nothing able to race it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Tagged {
+    action: Action,
+    generation: u64,
+}
+
+/// Tags every action in `actions` with its service's *current* generation
+/// (read from `machine`, still under the same lock `tick` produced
+/// `actions` with — see [`Tagged`]). An action naming a service `machine`
+/// no longer tracks is dropped outright rather than tagged with a made-up
+/// generation: `tick`'s own postcondition (every action's service is
+/// tracked immediately after it returns) rules this out in practice, so
+/// it is logged as the anomaly it would be, not silently worked around.
+/// Tauri-free, unit-tested directly below.
+fn tag_actions(machine: &LivenessMachine, actions: Vec<Action>) -> Vec<Tagged> {
+    actions
+        .into_iter()
+        .filter_map(|action| {
+            let id = action_service_id(&action);
+            match machine.generation(id) {
+                Some(generation) => Some(Tagged { action, generation }),
+                None => {
+                    tracing::error!(
+                        service_id = %id,
+                        "liveness: action decided for a service no longer tracked, discarding"
+                    );
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+/// Whether `tagged` is still safe to apply: `current_generation` — what
+/// [`LivenessMachine::generation`] reports for its service *right now* —
+/// still equals the generation it was tagged with. `None` (no longer
+/// tracked at all — removed, or never was) is also a mismatch. Pure,
+/// unit-tested directly below; [`LivenessRuntime::apply_tagged_action`]
+/// is its only production caller, called right before applying, so a
+/// concurrent `touch` (design.md §2.2.6: a report arriving resets
+/// everything) that lands between `tick` deciding this action and the
+/// runtime actually applying it is exactly what this catches — the
+/// service already recovered, so reloading/recreating it now would be
+/// wrong.
+fn is_current(tagged: &Tagged, current_generation: Option<u64>) -> bool {
+    current_generation == Some(tagged.generation)
+}
+
+/// Whether a freshly received report's `now_ms` should replace `existing`
+/// (`state.staleness[id].last_at`): only if there was no previous value,
+/// or the new one is not older (design.md §2.2.2) — reports can arrive
+/// out of order (e.g. two concurrent `report_unread` calls), and letting
+/// an earlier one overwrite a later one would make a service look staler
+/// than it actually is. Pure, unit-tested directly below;
+/// [`LivenessRuntime::record_report`] is its only production caller.
+fn is_newer_last_at(now_ms: u64, existing: Option<u64>) -> bool {
+    match existing {
+        None => true,
+        Some(existing) => now_ms >= existing,
+    }
+}
+
 /// Runs the 30s liveness tick loop (design.md §2.2.8, SPEC.md §9.4) and
 /// exposes [`Self::record_report`] for `agent_bridge::report_unread` to
 /// call right after a report validates.
@@ -175,14 +249,32 @@ impl LivenessRuntime {
     async fn tick_once(&self) {
         let snapshot = self.service_manager.snapshot().await;
 
-        let actions = {
+        let tagged_actions = {
             let mut machine = self.lock_machine();
-            evaluate_tick(self.clock.as_ref(), &mut machine, &snapshot.statuses)
+            let actions = evaluate_tick(self.clock.as_ref(), &mut machine, &snapshot.statuses);
+            tag_actions(&machine, actions)
         };
 
-        for action in actions {
-            self.apply_action(action).await;
+        for tagged in tagged_actions {
+            self.apply_tagged_action(tagged).await;
         }
+    }
+
+    /// Re-checks `tagged`'s generation immediately before applying it
+    /// (module-level [`is_current`]'s own doc has the full picture):
+    /// discards it, instead of applying it, if a report has reset the
+    /// service since `tick` decided this action.
+    async fn apply_tagged_action(&self, tagged: Tagged) {
+        let id = action_service_id(&tagged.action).clone();
+        let current_generation = self.lock_machine().generation(&id);
+        if !is_current(&tagged, current_generation) {
+            tracing::warn!(
+                service_id = %id,
+                "liveness: discarding a stale action (the service recovered or was removed since it was decided)"
+            );
+            return;
+        }
+        self.apply_action(tagged.action).await;
     }
 
     async fn apply_action(&self, action: Action) {
@@ -254,7 +346,9 @@ impl LivenessRuntime {
                 count: 0,
                 last_at: None,
             });
-            stats.last_at = Some(now_ms);
+            if is_newer_last_at(now_ms, stats.last_at) {
+                stats.last_at = Some(now_ms);
+            }
         }) {
             tracing::error!(service_id = %id, "liveness: failed to record last report time: {err}");
         }
@@ -377,5 +471,136 @@ mod tests {
             evaluate_touch(&FixedClock(42), &mut machine, &id("gmail")),
             Some(42)
         );
+    }
+
+    // --- generation tagging / discard (finding 2) ------------------------
+
+    #[test]
+    fn action_service_id_extracts_the_id_from_every_variant() {
+        assert_eq!(
+            action_service_id(&Action::MarkStale { id: id("gmail") }),
+            &id("gmail")
+        );
+        assert_eq!(
+            action_service_id(&Action::Reload { id: id("gmail") }),
+            &id("gmail")
+        );
+        assert_eq!(
+            action_service_id(&Action::Recreate { id: id("gmail") }),
+            &id("gmail")
+        );
+    }
+
+    #[test]
+    fn tag_actions_tags_each_action_with_its_services_current_generation() {
+        let mut machine = LivenessMachine::new();
+        machine.touch(&id("gmail"), 1_000);
+        let generation = machine.generation(&id("gmail")).expect("tracked");
+
+        let tagged = tag_actions(
+            &machine,
+            vec![
+                Action::MarkStale { id: id("gmail") },
+                Action::Reload { id: id("gmail") },
+            ],
+        );
+        assert_eq!(
+            tagged,
+            vec![
+                Tagged {
+                    action: Action::MarkStale { id: id("gmail") },
+                    generation,
+                },
+                Tagged {
+                    action: Action::Reload { id: id("gmail") },
+                    generation,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn tag_actions_drops_an_action_for_a_service_no_longer_tracked() {
+        // `machine` never registered "gmail" at all — standing in for the
+        // (should-never-happen) case `tag_actions`'s own doc describes.
+        let machine = LivenessMachine::new();
+        let tagged = tag_actions(&machine, vec![Action::Reload { id: id("gmail") }]);
+        assert!(tagged.is_empty());
+    }
+
+    #[test]
+    fn is_current_true_when_the_generation_still_matches() {
+        let tagged = Tagged {
+            action: Action::Reload { id: id("gmail") },
+            generation: 3,
+        };
+        assert!(is_current(&tagged, Some(3)));
+    }
+
+    #[test]
+    fn is_current_false_when_a_touch_bumped_the_generation() {
+        // A report arrived (bumping the generation) between `tick`
+        // deciding this action and the runtime re-checking it — the exact
+        // race `tag_actions`/`is_current` exist to catch.
+        let tagged = Tagged {
+            action: Action::Reload { id: id("gmail") },
+            generation: 3,
+        };
+        assert!(!is_current(&tagged, Some(4)));
+    }
+
+    #[test]
+    fn is_current_false_when_the_service_is_no_longer_tracked() {
+        let tagged = Tagged {
+            action: Action::Recreate { id: id("gmail") },
+            generation: 0,
+        };
+        assert!(!is_current(&tagged, None));
+    }
+
+    #[test]
+    fn stale_recovery_action_is_discarded_end_to_end_in_the_pure_layer() {
+        // The scenario the runtime loop guards against, reproduced with
+        // only the pure pieces: `tick` decides a `Recreate` for a service
+        // that is still stale; before it would be applied, a report
+        // arrives (`touch`, e.g. via `record_report`) and resets it. The
+        // tagged action must then read as no longer current.
+        let mut machine = LivenessMachine::new();
+        let s = statuses(&[("gmail", ServiceStatus::Loading)]);
+        machine.tick(1_000, &s);
+
+        let t1 = 1_000 + PAST_THRESHOLD_MS;
+        machine.tick(t1, &s); // MarkStale + Reload
+
+        let stale = statuses(&[("gmail", ServiceStatus::Stale)]);
+        machine.tick(t1 + 30_000, &stale); // one tick after the reload
+        let actions = machine.tick(t1 + 60_000, &stale); // Recreate
+        let tagged = tag_actions(&machine, actions);
+        assert_eq!(tagged.len(), 1);
+
+        // The service recovers right after `tick` decided to recreate it,
+        // but before the runtime gets to apply that decision.
+        machine.touch(&id("gmail"), t1 + 60_001);
+
+        let current_generation = machine.generation(&id("gmail"));
+        assert!(!is_current(&tagged[0], current_generation));
+    }
+
+    // --- monotonic `last_at` (finding 3) ----------------------------------
+
+    #[test]
+    fn is_newer_last_at_true_when_nothing_was_stored_yet() {
+        assert!(is_newer_last_at(1_000, None));
+    }
+
+    #[test]
+    fn is_newer_last_at_true_for_an_equal_or_later_time() {
+        assert!(is_newer_last_at(1_000, Some(1_000)));
+        assert!(is_newer_last_at(1_001, Some(1_000)));
+    }
+
+    #[test]
+    fn is_newer_last_at_false_for_an_earlier_time() {
+        assert!(!is_newer_last_at(999, Some(1_000)));
     }
 }

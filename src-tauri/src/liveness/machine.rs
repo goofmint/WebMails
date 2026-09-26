@@ -72,7 +72,11 @@ enum Phase {
     /// service returns to `Monitoring` with a fresh baseline (design.md
     /// §2.2.8: "recreate never removes the old profile's on-disk data",
     /// i.e. the page just reloads from its session, so a fresh window
-    /// starts here too).
+    /// starts here too). If `status` becomes exempt while counting down
+    /// (e.g. the reload landed the page off-origin), the countdown itself
+    /// is abandoned: exempt means "not this machine's problem to fix",
+    /// which the `Reloaded` phase's whole reason for counting — deciding
+    /// whether to recreate — no longer applies to.
     Reloaded { ticks_since_reload: u32 },
 }
 
@@ -85,6 +89,16 @@ struct ServiceLiveness {
     /// report").
     last_report_ms: u64,
     phase: Phase,
+    /// Bumped only by [`LivenessMachine::touch`] (an external reset — a
+    /// report arriving, design.md §2.2.6) — never by `tick`'s own
+    /// internal phase transitions. The runtime tags each action `tick`
+    /// returns with this value at the moment it was decided, and
+    /// re-checks it (via [`LivenessMachine::generation`]) right before
+    /// applying that action: if a report reset the service in between,
+    /// the generation no longer matches and the runtime discards the
+    /// now-stale action rather than reloading/recreating a service that
+    /// has already recovered.
+    generation: u64,
 }
 
 impl ServiceLiveness {
@@ -92,16 +106,19 @@ impl ServiceLiveness {
         ServiceLiveness {
             last_report_ms: now_ms,
             phase: Phase::Monitoring,
+            generation: 0,
         }
     }
 }
 
-/// Whether `status` is exempt from staleness evaluation while
-/// [`Phase::Monitoring`] (design.md §2.2.8): `NeedsAttention(OffOrigin)`,
-/// because the agent is not permitted to report there, and
-/// `NeedsAttention(CreateFailed)`, because there is no webview to reload —
-/// the task's own instruction, matching how `OffOrigin` is already
-/// exempted. Nothing invents a retry for either case.
+/// Whether `status` is exempt from staleness evaluation (design.md
+/// §2.2.8): `NeedsAttention(OffOrigin)`, because the agent is not
+/// permitted to report there, and `NeedsAttention(CreateFailed)`, because
+/// there is no webview to reload — the task's own instruction, matching
+/// how `OffOrigin` is already exempted. Nothing invents a retry for
+/// either case. Checked in both [`Phase::Monitoring`] (skip the
+/// staleness check) and [`Phase::Reloaded`] (abandon the recreate
+/// countdown).
 fn is_exempt(status: &ServiceStatus) -> bool {
     matches!(
         status,
@@ -135,14 +152,33 @@ impl LivenessMachine {
     /// rather than inheriting a stale one. Registers `id` if it was not
     /// already tracked.
     pub fn touch(&mut self, id: &ServiceId, now_ms: u64) {
-        self.services
-            .insert(id.clone(), ServiceLiveness::fresh(now_ms));
+        let generation = self
+            .services
+            .get(id)
+            .map_or(0, |existing| existing.generation.wrapping_add(1));
+        self.services.insert(
+            id.clone(),
+            ServiceLiveness {
+                generation,
+                ..ServiceLiveness::fresh(now_ms)
+            },
+        );
     }
 
     /// Stops tracking `id` (no further `tick` evaluates it until it is
-    /// `touch`ed or reappears in a `tick`'s `statuses`).
+    /// `touch`ed or reappears in a `tick`'s `statuses`). Also invalidates
+    /// any action already tagged with `id`'s generation: [`Self::
+    /// generation`] returns `None` for an untracked id, which never
+    /// equals a previously tagged `Some(_)`.
     pub fn remove(&mut self, id: &ServiceId) {
         self.services.remove(id);
+    }
+
+    /// `id`'s current generation counter (`None` if untracked) — see
+    /// [`ServiceLiveness::generation`]'s doc for what the runtime uses
+    /// this for.
+    pub fn generation(&self, id: &ServiceId) -> Option<u64> {
+        self.services.get(id).map(|liveness| liveness.generation)
     }
 
     /// Evaluates every service named in `statuses` at `now_ms` and returns
@@ -189,6 +225,17 @@ impl LivenessMachine {
                     }
                 }
                 Phase::Reloaded { ticks_since_reload } => {
+                    if is_exempt(status) {
+                        // The reload landed the service somewhere this
+                        // machine cannot help with (design.md §2.2.8's
+                        // exemptions) — abandon the recreate countdown
+                        // rather than escalating a case that isn't a
+                        // liveness problem, and start a fresh window from
+                        // here in case it later becomes eligible again.
+                        liveness.last_report_ms = now_ms;
+                        liveness.phase = Phase::Monitoring;
+                        continue;
+                    }
                     *ticks_since_reload += 1;
                     if *ticks_since_reload >= TICKS_AFTER_RELOAD {
                         actions.push(Action::Recreate { id: id.clone() });
@@ -365,6 +412,57 @@ mod tests {
     }
 
     #[test]
+    fn off_origin_during_reloaded_abandons_the_countdown_and_never_recreates() {
+        let mut machine = LivenessMachine::new();
+        let s = statuses(&[("gmail", ServiceStatus::Loading)]);
+        machine.tick(BASE, &s);
+
+        // Crosses the threshold: MarkStale + Reload, phase -> Reloaded{0}.
+        let t1 = BASE + STALE_THRESHOLD_MS + 1;
+        assert_eq!(machine.tick(t1, &s).len(), 2);
+
+        // The reload lands the page off-origin before the agent can
+        // report again (design.md §2.2.8's exemption applies here too).
+        let off_origin = statuses(&[(
+            "gmail",
+            ServiceStatus::NeedsAttention {
+                reason: AttentionReason::OffOrigin,
+            },
+        )]);
+        let t2 = t1 + TICK_MS;
+        assert!(machine.tick(t2, &off_origin).is_empty());
+
+        // Even after two more ticks — the point at which a Recreate would
+        // otherwise have fired — nothing happens: the countdown was
+        // abandoned, not merely paused.
+        let t3 = t2 + TICK_MS;
+        assert!(machine.tick(t3, &off_origin).is_empty());
+        let t4 = t3 + TICK_MS;
+        assert!(machine.tick(t4, &off_origin).is_empty());
+    }
+
+    #[test]
+    fn create_failed_during_reloaded_abandons_the_countdown_and_never_recreates() {
+        let mut machine = LivenessMachine::new();
+        let s = statuses(&[("gmail", ServiceStatus::Loading)]);
+        machine.tick(BASE, &s);
+
+        let t1 = BASE + STALE_THRESHOLD_MS + 1;
+        assert_eq!(machine.tick(t1, &s).len(), 2);
+
+        let create_failed = statuses(&[(
+            "gmail",
+            ServiceStatus::NeedsAttention {
+                reason: AttentionReason::CreateFailed,
+            },
+        )]);
+        let t2 = t1 + TICK_MS;
+        assert!(machine.tick(t2, &create_failed).is_empty());
+        let t3 = t2 + TICK_MS;
+        assert!(machine.tick(t3, &create_failed).is_empty());
+    }
+
+    #[test]
     fn a_report_arriving_mid_episode_resets_everything() {
         let mut machine = LivenessMachine::new();
         let s = statuses(&[("gmail", ServiceStatus::Loading)]);
@@ -450,6 +548,59 @@ mod tests {
         let mut machine = LivenessMachine::new();
         machine.touch(&id("gmail"), BASE);
         assert!(machine.is_tracked(&id("gmail")));
+    }
+
+    #[test]
+    fn generation_is_none_for_an_untracked_service() {
+        let machine = LivenessMachine::new();
+        assert_eq!(machine.generation(&id("gmail")), None);
+    }
+
+    #[test]
+    fn touch_bumps_the_generation_each_time() {
+        let mut machine = LivenessMachine::new();
+        machine.touch(&id("gmail"), BASE);
+        let g0 = machine.generation(&id("gmail")).expect("tracked");
+
+        machine.touch(&id("gmail"), BASE + 1);
+        let g1 = machine.generation(&id("gmail")).expect("tracked");
+        assert_ne!(g0, g1);
+
+        machine.touch(&id("gmail"), BASE + 2);
+        let g2 = machine.generation(&id("gmail")).expect("tracked");
+        assert_ne!(g1, g2);
+    }
+
+    #[test]
+    fn tick_does_not_bump_the_generation_for_its_own_transitions() {
+        // Only an external reset (`touch`) changes the generation —
+        // `tick`'s own internal transitions (crossing the threshold,
+        // reloading, recreating) must not, or every in-flight action the
+        // very tick that decided them produced would already look stale
+        // by the time the runtime re-checks it.
+        let mut machine = LivenessMachine::new();
+        let s = statuses(&[("gmail", ServiceStatus::Loading)]);
+        machine.tick(BASE, &s);
+        let g0 = machine.generation(&id("gmail")).expect("tracked");
+
+        let t1 = BASE + STALE_THRESHOLD_MS + 1;
+        machine.tick(t1, &s); // MarkStale + Reload
+        assert_eq!(machine.generation(&id("gmail")), Some(g0));
+
+        let stale = statuses(&[("gmail", ServiceStatus::Stale)]);
+        machine.tick(t1 + TICK_MS, &stale);
+        machine.tick(t1 + 2 * TICK_MS, &stale); // Recreate
+        assert_eq!(machine.generation(&id("gmail")), Some(g0));
+    }
+
+    #[test]
+    fn remove_makes_the_generation_none_again() {
+        let mut machine = LivenessMachine::new();
+        machine.touch(&id("gmail"), BASE);
+        assert!(machine.generation(&id("gmail")).is_some());
+
+        machine.remove(&id("gmail"));
+        assert_eq!(machine.generation(&id("gmail")), None);
     }
 
     #[test]
