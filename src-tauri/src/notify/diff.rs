@@ -36,6 +36,13 @@ impl ServiceNotifyState {
 
     /// The count [`evaluate`] last recorded for this service, or `None`
     /// if no report with a non-null count has been seen since launch.
+    ///
+    /// No production caller yet outside this module's own tests — a
+    /// future diagnostics view (design.md §2.2.12's `get_diagnostics`) is
+    /// a plausible one — so this stays `#[allow(dead_code)]` rather than
+    /// fabricating a reader that doesn't exist (same pattern as
+    /// `agent_bridge::validate::ValidReport`'s still-unread fields).
+    #[allow(dead_code)]
     pub fn last_count(&self) -> Option<u32> {
         self.last_count
     }

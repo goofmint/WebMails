@@ -40,6 +40,15 @@ pub enum AppError {
     /// (design.md §2.2.4, §5.1: "Webview creation failure").
     #[error("webview error: {0}")]
     Webview(String),
+
+    /// A `notify::sink::NotificationSink` failed to show a notification
+    /// (design.md §5.1: "Notification sink failure ... Logged at warn
+    /// level. Unread state is unaffected"). Every construction site logs
+    /// this and moves on; it never stops the unread count or seen ring
+    /// from being updated, and never propagates further than that log
+    /// line.
+    #[error("notification error: {0}")]
+    Notification(String),
 }
 
 /// Wraps a Tauri runtime failure (e.g. `Window::add_child`, `Webview::
@@ -65,6 +74,7 @@ impl AppError {
             AppError::State(_) => "state",
             AppError::Profile(_) => "profile",
             AppError::Webview(_) => "webview",
+            AppError::Notification(_) => "notification",
         }
     }
 }
@@ -138,6 +148,17 @@ mod tests {
         assert_eq!(
             value,
             json!({ "kind": "webview", "message": err.to_string() })
+        );
+    }
+
+    #[test]
+    fn notification_error_serializes_kind_and_message() {
+        let err = AppError::Notification("plugin unavailable".to_string());
+        let value = serde_json::to_value(&err).expect("serialize");
+        assert_eq!(err.kind(), "notification");
+        assert_eq!(
+            value,
+            json!({ "kind": "notification", "message": err.to_string() })
         );
     }
 

@@ -860,6 +860,47 @@ impl ServiceManager {
         }
     }
 
+    /// Gathers everything `notify::dispatcher::Dispatcher` needs about
+    /// `id`'s current notification configuration — display name, both
+    /// notification toggles, the batching threshold — and runs `f`
+    /// against the live `StateStore`, all under one lock of
+    /// `self.inner` (design.md §2.2.9; Task 4.5's wiring). This
+    /// serializes report-driven `StateStore` updates (typically
+    /// `Dispatcher::evaluate_and_persist`) against every other edit this
+    /// manager makes, the same way `apply_edit_inner` does.
+    ///
+    /// Returns `None` — without calling `f` — if `id` is not (or no
+    /// longer) a configured service, or if this manager never started
+    /// (`ManagerState::Failed`); the caller (`agent_bridge::
+    /// report_unread`) treats that the same as any other unknown-service
+    /// drop (logged at debug level, no fallback).
+    ///
+    /// `f`'s result travels back inside [`NotifyContext`] so the caller
+    /// can plan and send any notification only *after* this method
+    /// returns — i.e. with `self.inner`'s lock already released, so a
+    /// sink call never blocks unrelated `ServiceManager` operations
+    /// (`notify::dispatcher`'s own module doc explains why that split
+    /// matters).
+    pub async fn with_notify_state<T>(
+        &self,
+        id: &ServiceId,
+        f: impl FnOnce(&StateStore) -> T,
+    ) -> Option<NotifyContext<T>> {
+        let guard = self.inner.lock().await;
+        let ready = match &*guard {
+            ManagerState::Failed(_) => return None,
+            ManagerState::Ready(ready) => ready,
+        };
+        let service = ready.config.services.iter().find(|s| s.id == *id)?;
+        Some(NotifyContext {
+            service_name: service.name.clone(),
+            service_notifications: service.notifications,
+            global_notifications: ready.config.settings.notifications,
+            batch_threshold: ready.config.settings.notification_batch_threshold,
+            result: f(&ready.state),
+        })
+    }
+
     /// Emits `services-changed` — `{ services: [...] }`, `services` in
     /// sidebar order — to both the `shell` and `settings` webviews (Task
     /// 1.9; design.md §2.2.12). `emit_to` a label with no current webview
@@ -918,6 +959,17 @@ pub struct ManagerSnapshot {
     pub settings: Option<Settings>,
     pub services: Vec<ServiceConfig>,
     pub config_error: Option<ConfigError>,
+}
+
+/// [`ServiceManager::with_notify_state`]'s return value: a service's
+/// current notification configuration, snapshotted under the same lock
+/// as `result` was produced under (design.md §2.2.9; Task 4.5's wiring).
+pub struct NotifyContext<T> {
+    pub service_name: String,
+    pub service_notifications: bool,
+    pub global_notifications: bool,
+    pub batch_threshold: u32,
+    pub result: T,
 }
 
 /// The error returned when an edit (or [`ServiceManager::select_service`])

@@ -19,6 +19,7 @@ tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
 tauri = { version = "~2.11.1", features = ["unstable"] }
+tauri-plugin-notification = "2"
 serde = "1.0.229"
 serde_json = "1.0.151"
 thiserror = "2.0.21"

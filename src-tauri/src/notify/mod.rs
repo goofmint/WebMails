@@ -1,23 +1,21 @@
-//! Seen-id ring and diff engine for unread-count notifications
-//! (design.md §2.2.9).
+//! Notification pipeline for unread-count reports (design.md §2.2.9):
+//! deciding what changed (`diff`), remembering which message ids have
+//! already been notified about (`seen`), turning that decision into
+//! notification text (`text`) and an `OutgoingNotification` (`sink`), and
+//! coordinating persistence plus sending (`dispatcher`).
 //!
-//! - `seen` holds pure ring operations (`contains`, `insert`,
-//!   `insert_all`) over `state::SeenRing`.
-//! - `diff` holds the pure `evaluate` decision function and its
-//!   `ServiceNotifyState` in-memory baseline.
-//!
-//! Neither module touches Tauri, `StateStore`, or `report_unread`:
-//! deciding what to do with an `evaluate` result — persisting newly-seen
-//! ids into the ring and actually dispatching a notification — is task
-//! 4.5's job (`dispatcher.rs`/`sink.rs`, not added by this task).
-//!
-//! Nothing outside this module's own tests calls into it yet, since that
-//! wiring is task 4.5. Rather than fabricate a caller that doesn't
-//! exist, `dead_code` and the resulting `unused_imports` on this
-//! module's re-exports are allowed for this module only.
-#![allow(dead_code, unused_imports)]
+//! `diff` and `seen` are pure and know nothing about Tauri, `StateStore`,
+//! or `report_unread` — see their own module docs. `dispatcher::Dispatcher`
+//! is the seam that ties them to a live `StateStore` and a
+//! `NotificationSink`; `agent_bridge::report_unread` (Task 4.5's wiring)
+//! is its only production caller, via `services::ServiceManager::
+//! with_notify_state`.
 
 mod diff;
+mod dispatcher;
 mod seen;
+mod sink;
+mod text;
 
-pub use diff::{evaluate, DiffOutcome, MessageRef, ServiceNotifyState};
+pub use dispatcher::Dispatcher;
+pub use sink::TauriNotificationSink;

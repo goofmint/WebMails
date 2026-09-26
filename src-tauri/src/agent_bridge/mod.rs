@@ -17,6 +17,7 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::config::ServiceId;
+use crate::notify::Dispatcher;
 use crate::services::ServiceManager;
 
 pub use dto::UnreadReportDto;
@@ -69,6 +70,7 @@ pub async fn report_unread(
     webview: tauri::Webview,
     report: UnreadReportDto,
     services: State<'_, Arc<ServiceManager>>,
+    dispatcher: State<'_, Arc<Dispatcher>>,
 ) -> Result<(), ReportError> {
     let label = webview.label().to_string();
     let requested_service_id = report.service_id.clone();
@@ -93,12 +95,14 @@ pub async fn report_unread(
     match validate::validate(report, &label, &caller_url, |_id| service_url) {
         Ok(valid_report) => {
             // Task 2.3's `unread` status store will consume `valid_report`
-            // here once it exists; until then, accepting it is a no-op
-            // beyond this log line.
+            // here once it exists too; until then, dispatching a
+            // notification (Task 4.5) is the only consumer beyond this
+            // log line.
             tracing::debug!(
                 service_id = %valid_report.service_id(),
-                "accepted unread report (no consumer yet — Task 2.3)"
+                "accepted unread report"
             );
+            dispatch_notification(services.inner(), dispatcher.inner(), &valid_report).await;
             Ok(())
         }
         Err(err) => {
@@ -108,6 +112,58 @@ pub async fn report_unread(
                 "rejected unread report"
             );
             Ok(())
+        }
+    }
+}
+
+/// Runs `notify::diff::evaluate` and dispatches any resulting
+/// notification for `report` (design.md §2.2.9; Task 4.5's wiring).
+///
+/// A small, standalone call — kept separate from `report_unread`'s own
+/// body — so it stays a single, easily-rebased addition to the success
+/// arm alongside Task 2.3's (not yet merged) unread status store, rather
+/// than the two changes interleaving in the same block.
+///
+/// Looks up `report.service_id()`'s current display name and
+/// notification toggles/threshold through [`ServiceManager::
+/// with_notify_state`], which also runs [`Dispatcher::evaluate_and_persist`]
+/// under that same lock. If that returns `None` (the service no longer
+/// exists, or `services` never started), this logs at debug level and
+/// does nothing further — the same "drop and log, no fallback" rule
+/// `report_unread` itself already follows. On `Some`, any resulting
+/// notification is planned and sent only after `ServiceManager`'s lock
+/// has already been released (`Dispatcher::send`'s own contract).
+async fn dispatch_notification(
+    services: &ServiceManager,
+    dispatcher: &Dispatcher,
+    report: &ValidReport,
+) {
+    let id = report.service_id().clone();
+    let Some(ctx) = services
+        .with_notify_state(&id, |state| {
+            dispatcher.evaluate_and_persist(state, &id, report)
+        })
+        .await
+    else {
+        tracing::debug!(service_id = %id, "no live service for notification dispatch");
+        return;
+    };
+
+    match ctx.result {
+        Ok(outcome) => dispatcher.send(
+            &id,
+            &ctx.service_name,
+            ctx.global_notifications,
+            ctx.service_notifications,
+            ctx.batch_threshold,
+            outcome,
+        ),
+        Err(err) => {
+            tracing::warn!(
+                service_id = %id,
+                error = %err,
+                "failed to persist notification state for report"
+            );
         }
     }
 }
