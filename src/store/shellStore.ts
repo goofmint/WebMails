@@ -65,6 +65,13 @@ export function createShellStore(ipc: ShellIpc): ShellStore {
   // the first refetch lands) apply only the most recently *started* one's
   // result, regardless of which one's promise happens to settle first.
   let latestRefreshSeq = 0;
+  // Bumped by every selectedId-choosing event — a user select() and the
+  // backend's own `select-service` event — and captured by refresh() when
+  // it starts. If this has moved on by the time a pending refresh's
+  // snapshot comes back, that snapshot's `activeServiceId` is older than
+  // the selection the user/backend has since made, so refresh() keeps
+  // `state.selectedId` instead of clobbering it.
+  let selectionSeq = 0;
 
   function getState(): ShellState {
     return state;
@@ -101,19 +108,37 @@ export function createShellStore(ipc: ShellIpc): ShellStore {
    * `generation` happens to hold once this settles.
    */
   async function refresh(gen: number): Promise<void> {
+    if (gen !== generation || !started) {
+      // Already stale at call time — bail before touching `latestRefreshSeq`
+      // at all. A stale-generation call that *did* take a seq here would
+      // still correctly no-op itself below, but the seq it took would
+      // become the new "latest", wrongly invalidating the current
+      // generation's own in-flight refresh once that one's result comes
+      // back and finds its (older, but legitimate) seq no longer current.
+      return;
+    }
     const seq = ++latestRefreshSeq;
+    // Snapshotted so that, once the fetch below resolves, we can tell
+    // whether a newer selection (select() or a `select-service` event) has
+    // happened in the meantime and, if so, keep it instead of applying this
+    // now-stale response's `activeServiceId`.
+    const selectionSeqAtStart = selectionSeq;
     try {
       const snapshot = await ipc.getSnapshot();
       if (isStaleRefresh(gen, seq)) {
         return;
       }
       // The backend is authoritative for which service is active
-      // (`snapshot.activeServiceId`), so every (re)fetch re-syncs
-      // `selectedId` to it rather than keeping whatever this store
-      // guessed before — `select()`'s own optimistic update and the
-      // `select-service` event are what keep `selectedId` current between
-      // fetches.
-      setState({ status: "ready", snapshot, selectedId: snapshot.activeServiceId });
+      // (`snapshot.activeServiceId`), so a refetch normally re-syncs
+      // `selectedId` to it — unless a newer selection has happened while
+      // this fetch was pending, in which case that selection wins and only
+      // the rest of the snapshot (services/statuses/etc.) is applied.
+      const keepNewerSelection = selectionSeq !== selectionSeqAtStart;
+      const selectedId =
+        keepNewerSelection && state.status === "ready"
+          ? state.selectedId
+          : snapshot.activeServiceId;
+      setState({ status: "ready", snapshot, selectedId });
     } catch (caughtError) {
       if (isStaleRefresh(gen, seq)) {
         return;
@@ -128,6 +153,7 @@ export function createShellStore(ipc: ShellIpc): ShellStore {
         void refresh(gen);
       }),
       ipc.onSelectService(({ id }) => {
+        selectionSeq += 1;
         if (state.status === "ready") {
           setState({ ...state, selectedId: id });
         }
@@ -203,6 +229,7 @@ export function createShellStore(ipc: ShellIpc): ShellStore {
     // keeps referring to the generation `select()` was actually called
     // under, not whatever `generation` holds once the catch runs.
     const gen = generation;
+    selectionSeq += 1;
     setState({ ...state, selectedId: id });
     ipc.selectService(id).catch((caughtError: unknown) => {
       console.error("selectService failed:", errorMessage(caughtError));

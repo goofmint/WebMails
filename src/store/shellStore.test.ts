@@ -403,4 +403,73 @@ describe("createShellStore", () => {
     if (afterOlder.status !== "ready") throw new Error("expected ready state");
     expect(afterOlder.selectedId).toBe("icloud");
   });
+
+  it("a stale generation's select() failure can't invalidate the current generation's in-flight refresh", async () => {
+    const ipc = createMockShellIpc(snapshot({ activeServiceId: "gmail" }));
+    const store = createShellStore(ipc);
+    store.start();
+    await vi.waitFor(() => expect(store.getState().status).toBe("ready"));
+
+    // generation 1: select() fails, but its IPC call stays pending for now.
+    const selectServiceFailure = createDeferred<void>();
+    ipc.selectService.mockReturnValueOnce(selectServiceFailure.promise);
+    store.select("icloud");
+
+    // Stop and restart before that call settles — a new generation, with
+    // its own in-flight refresh (blocked on `restartSnapshot`).
+    store.stop();
+    const restartSnapshot = createDeferred<Snapshot>();
+    ipc.getSnapshot.mockReturnValueOnce(restartSnapshot.promise);
+    store.start();
+    await vi.waitFor(() => expect(ipc.getSnapshot).toHaveBeenCalledTimes(2));
+
+    // Now let the stale (generation-1) select() failure settle. Its
+    // refresh() call must bail out (wrong generation) without bumping the
+    // refresh sequence counter, or it would wrongly invalidate the current
+    // generation's already in-flight refresh below.
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    selectServiceFailure.reject(new Error("selectService failed"));
+    await selectServiceFailure.promise.catch(() => {});
+    consoleErrorSpy.mockRestore();
+
+    // The current generation's refresh settles afterwards and must still
+    // be applied.
+    restartSnapshot.resolve(snapshot({ activeServiceId: "outlook" }));
+    await restartSnapshot.promise;
+
+    const state = store.getState();
+    if (state.status !== "ready") throw new Error("expected ready state");
+    expect(state.selectedId).toBe("outlook");
+  });
+
+  it("keeps a newer select-service choice over a pending refresh's older snapshot", async () => {
+    const ipc = createMockShellIpc(snapshot({ activeServiceId: "gmail" }));
+    const store = createShellStore(ipc);
+    store.start();
+    await vi.waitFor(() => expect(store.getState().status).toBe("ready"));
+
+    const pendingSnapshot = createDeferred<Snapshot>();
+    ipc.getSnapshot.mockReturnValueOnce(pendingSnapshot.promise);
+    ipc.emitServicesChanged(); // starts a refresh() whose getSnapshot is now pending
+
+    // A select-service event arrives from the backend while that refresh
+    // is still in flight.
+    ipc.emitSelectService("icloud");
+    const midFlight = store.getState();
+    if (midFlight.status !== "ready") throw new Error("expected ready state");
+    expect(midFlight.selectedId).toBe("icloud");
+
+    // The pending refresh's snapshot resolves with an *older* activeServiceId.
+    pendingSnapshot.resolve(
+      snapshot({ activeServiceId: "gmail", services: [service({ id: "outlook" })] }),
+    );
+    await pendingSnapshot.promise;
+
+    const state = store.getState();
+    if (state.status !== "ready") throw new Error("expected ready state");
+    // The newer select-service choice survives the older snapshot...
+    expect(state.selectedId).toBe("icloud");
+    // ...while the rest of that snapshot is still applied.
+    expect(state.snapshot.services).toHaveLength(1);
+  });
 });
