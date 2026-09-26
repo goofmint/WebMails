@@ -181,7 +181,7 @@ async fn resolve_bytes(
 pub struct CachedIcon {
     /// Absolute filesystem path to the cached PNG.
     pub path: PathBuf,
-    /// The file's modification time (Unix seconds) — bumped every time the
+    /// The file's modification time (Unix milliseconds) — bumped every time the
     /// PNG is rewritten, so the shell can bust its `convertFileSrc` cache
     /// with a `?v=` query parameter.
     pub version: u64,
@@ -255,12 +255,22 @@ impl IconService {
     pub fn cached_icon(&self, id: &ServiceId) -> Option<CachedIcon> {
         let path = paths::icon_cache_file(&self.data_dir, id);
         let metadata = std::fs::metadata(&path).ok()?;
-        let version = metadata
+        // Milliseconds, so two rewrites within one second still get
+        // distinct versions (fits a JS number for any real date). If the
+        // modification time can't be read, the PNG can't be versioned, so
+        // it is treated as not cached rather than given a made-up version.
+        let version = match metadata
             .modified()
             .ok()
             .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|duration| duration.as_secs())
-            .unwrap_or(0);
+            .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+        {
+            Some(version) => version,
+            None => {
+                tracing::warn!("cached icon for '{id}' has no usable modification time");
+                return None;
+            }
+        };
         Some(CachedIcon { path, version })
     }
 
