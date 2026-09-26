@@ -20,6 +20,11 @@ const noopScheduler: Scheduler = {
   clearTimeout: () => {},
 };
 
+// Never expected to be called: no test in this file exercises a recipe that
+// calls `ctx.fetch()` (see the comment on the "starts the loop" tests
+// below), so this only needs to satisfy `AgentWindow`'s shape.
+const unusedFetch: typeof fetch = () => Promise.reject(new Error("unexpected fetch call in test"));
+
 function makeWindow(overrides: {
   origin?: string;
   bootstrap?: ElumaBootstrap;
@@ -33,6 +38,7 @@ function makeWindow(overrides: {
   const win: AgentWindow = {
     location: { origin: overrides.origin ?? "https://mail.google.com" },
     document: doc,
+    fetch: unusedFetch,
     get top(): AgentWindow {
       return box.top!;
     },
@@ -47,6 +53,7 @@ function makeDistinctFrame(doc: Document): AgentWindow {
   const frame: AgentWindow = {
     location: { origin: "https://frame.example" },
     document: doc,
+    fetch: unusedFetch,
     get top(): AgentWindow {
       return box.top!;
     },
