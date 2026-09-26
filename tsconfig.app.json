@@ -34,6 +34,6 @@
   // (this file, via `vite build`) and `tsconfig.agent.json` (via
   // `vite.agent.config.ts`). `agent/recipes/registry.test.ts` is excluded:
   // it is a Vitest test, not part of either shipped bundle.
-  "include": ["src", "agent/recipes"],
-  "exclude": ["agent/recipes/**/*.test.ts"]
+  "include": ["src", "agent/recipes", "agent/strategies"],
+  "exclude": ["agent/recipes/**/*.test.ts", "agent/strategies/**/*.test.ts"]
 }
