@@ -16,6 +16,7 @@ use std::sync::Arc;
 use tauri::{Manager, WebviewUrl};
 
 use host::{build_main_host, layout};
+use notify::{Dispatcher, TauriNotificationSink};
 use profile::PlatformProfileBackend;
 use services::ServiceManager;
 use state::StateStore;
@@ -38,6 +39,7 @@ fn current_content_rect(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             commands::get_snapshot,
             commands::add_service,
@@ -200,6 +202,15 @@ pub fn run() {
             // (`tauri::async_runtime`) and returns immediately; this hook
             // never blocks on it.
             ServiceManager::start(manager);
+
+            // The notification pipeline's baseline sink (design.md
+            // §2.2.9; Task 4.5): `TauriNotificationSink` calls
+            // `tauri-plugin-notification`'s Rust-side builder API
+            // directly, so registering the plugin above is the only
+            // setup it needs — see `notify::sink`'s module doc for why no
+            // webview capability is involved.
+            let sink = Arc::new(TauriNotificationSink::new(app.handle().clone()));
+            app.manage(Arc::new(Dispatcher::new(sink)));
 
             // Initial relayout, so the shell and any service the
             // background startup task has already created by the time
