@@ -56,6 +56,15 @@ pub enum ReportError {
     /// service exists in the live configuration.
     #[error("service does not exist")]
     UnknownService,
+    /// The calling webview's current URL (`tauri::Webview::url()`) has a
+    /// different origin than the service's currently configured URL.
+    /// This is distinct from a stale runtime-capability grant (a service
+    /// edited to a new URL keeps its old origin's grant — see
+    /// `agent_bridge::capability`'s module doc): this check compares
+    /// against the *current* configured origin regardless of what the
+    /// runtime ACL still happens to allow.
+    #[error("calling webview origin does not match the service's configured origin")]
+    OriginMismatch,
     /// `count` is present and negative.
     #[error("count must not be negative")]
     CountNegative,
@@ -105,6 +114,7 @@ impl ReportError {
         match self {
             ReportError::LabelMismatch => "label_mismatch",
             ReportError::UnknownService => "unknown_service",
+            ReportError::OriginMismatch => "origin_mismatch",
             ReportError::CountNegative => "count_negative",
             ReportError::CountTooLarge => "count_too_large",
             ReportError::TooManyMessages => "too_many_messages",
@@ -183,14 +193,23 @@ impl ValidReport {
 /// listed there, returning the first violation.
 ///
 /// `caller_label` is the invoking webview's label
-/// (`tauri::Webview::label()`). `lookup_service_url` resolves a
-/// [`ServiceId`] to its currently configured [`Url`] — `None` means the
-/// service does not exist — so this function stays pure and independent
-/// of how the caller looks that up (a live `ServiceManager` in
-/// production, a fixture map in tests).
+/// (`tauri::Webview::label()`). `caller_url` is the invoking webview's
+/// *current* URL (`tauri::Webview::url()`, already resolved by the
+/// caller — see [`super::report_unread`]'s doc comment for what happens
+/// when reading it fails); its origin must match the service's currently
+/// configured origin, or the report is rejected, because a previously
+/// granted runtime capability can outlive an edited service URL
+/// (`agent_bridge::capability`'s module doc) and so is not on its own
+/// proof that the webview is still showing the service's current
+/// origin. `lookup_service_url` resolves a [`ServiceId`] to its
+/// currently configured [`Url`] — `None` means the service does not
+/// exist — so this function stays pure and independent of how the
+/// caller looks that up (a live `ServiceManager` in production, a
+/// fixture map in tests).
 pub fn validate(
     dto: UnreadReportDto,
     caller_label: &str,
+    caller_url: &Url,
     lookup_service_url: impl FnOnce(&ServiceId) -> Option<Url>,
 ) -> Result<ValidReport, ReportError> {
     let service_id = ServiceId::new(dto.service_id).map_err(|_| ReportError::LabelMismatch)?;
@@ -199,6 +218,10 @@ pub fn validate(
     }
     let service_url = lookup_service_url(&service_id).ok_or(ReportError::UnknownService)?;
     let service_origin = service_url.origin();
+
+    if caller_url.origin() != service_origin {
+        return Err(ReportError::OriginMismatch);
+    }
 
     let count = match dto.count {
         None => None,
@@ -355,6 +378,13 @@ mod tests {
         host::service_label(&ServiceId::new(SERVICE_ID).expect("valid id"))
     }
 
+    /// The calling webview's current URL when it matches the service's
+    /// configured origin — the common case in tests that are not
+    /// specifically exercising [`ReportError::OriginMismatch`].
+    fn caller_url() -> Url {
+        Url::parse(SERVICE_ORIGIN).expect("valid url")
+    }
+
     fn lookup(_id: &ServiceId) -> Option<Url> {
         Some(Url::parse(SERVICE_ORIGIN).expect("valid url"))
     }
@@ -365,7 +395,8 @@ mod tests {
 
     #[test]
     fn accepts_a_minimal_valid_report() {
-        let report = validate(base_dto(), &caller_label(), lookup).expect("should validate");
+        let report =
+            validate(base_dto(), &caller_label(), &caller_url(), lookup).expect("should validate");
         assert_eq!(report.service_id().as_str(), SERVICE_ID);
     }
 
@@ -373,14 +404,14 @@ mod tests {
     fn accepts_null_count() {
         let mut dto = base_dto();
         dto.count = None;
-        assert!(validate(dto, &caller_label(), lookup).is_ok());
+        assert!(validate(dto, &caller_label(), &caller_url(), lookup).is_ok());
     }
 
     #[test]
     fn accepts_count_at_the_maximum() {
         let mut dto = base_dto();
         dto.count = Some(1_000_000);
-        assert!(validate(dto, &caller_label(), lookup).is_ok());
+        assert!(validate(dto, &caller_label(), &caller_url(), lookup).is_ok());
     }
 
     #[test]
@@ -393,7 +424,8 @@ mod tests {
             link: Some(format!("{SERVICE_ORIGIN}/mail/u/0/#inbox/abc")),
         }];
         dto.icon_candidates = vec![format!("{SERVICE_ORIGIN}/favicon.ico")];
-        let report = validate(dto, &caller_label(), lookup).expect("should validate");
+        let report =
+            validate(dto, &caller_label(), &caller_url(), lookup).expect("should validate");
         assert_eq!(report.icon_candidates.len(), 1);
         assert_eq!(report.messages.len(), 1);
         assert!(report.messages[0].link.is_some());
@@ -401,7 +433,7 @@ mod tests {
 
     #[test]
     fn rejects_wrong_label() {
-        let err = validate(base_dto(), "svc-someone-else", lookup).unwrap_err();
+        let err = validate(base_dto(), "svc-someone-else", &caller_url(), lookup).unwrap_err();
         assert_eq!(err, ReportError::LabelMismatch);
     }
 
@@ -409,21 +441,51 @@ mod tests {
     fn rejects_malformed_service_id() {
         let mut dto = base_dto();
         dto.service_id = "Not Valid!".to_string();
-        let err = validate(dto, "svc-anything", lookup).unwrap_err();
+        let err = validate(dto, "svc-anything", &caller_url(), lookup).unwrap_err();
         assert_eq!(err, ReportError::LabelMismatch);
     }
 
     #[test]
     fn rejects_unknown_service() {
-        let err = validate(base_dto(), &caller_label(), no_service).unwrap_err();
+        let err = validate(base_dto(), &caller_label(), &caller_url(), no_service).unwrap_err();
         assert_eq!(err, ReportError::UnknownService);
+    }
+
+    #[test]
+    fn rejects_a_caller_url_on_a_different_origin_than_the_service() {
+        let off_origin = Url::parse("https://evil.example.com/").expect("valid url");
+        let err = validate(base_dto(), &caller_label(), &off_origin, lookup).unwrap_err();
+        assert_eq!(err, ReportError::OriginMismatch);
+    }
+
+    #[test]
+    fn rejects_a_caller_url_differing_only_by_scheme() {
+        // Same host, different scheme: still a different origin.
+        let off_origin = Url::parse("http://mail.google.com/").expect("valid url");
+        let err = validate(base_dto(), &caller_label(), &off_origin, lookup).unwrap_err();
+        assert_eq!(err, ReportError::OriginMismatch);
+    }
+
+    #[test]
+    fn accepts_a_caller_url_on_the_same_origin_with_a_different_path() {
+        // Only the origin is compared — path, query and fragment on the
+        // caller's current URL are irrelevant.
+        let same_origin =
+            Url::parse(&format!("{SERVICE_ORIGIN}/mail/u/0/#inbox")).expect("valid url");
+        assert!(validate(base_dto(), &caller_label(), &same_origin, lookup).is_ok());
+    }
+
+    #[test]
+    fn origin_mismatch_serializes_with_the_expected_kind() {
+        let value = serde_json::to_value(ReportError::OriginMismatch).expect("serialize");
+        assert_eq!(value["kind"], "origin_mismatch");
     }
 
     #[test]
     fn rejects_a_negative_count() {
         let mut dto = base_dto();
         dto.count = Some(-1);
-        let err = validate(dto, &caller_label(), lookup).unwrap_err();
+        let err = validate(dto, &caller_label(), &caller_url(), lookup).unwrap_err();
         assert_eq!(err, ReportError::CountNegative);
     }
 
@@ -433,7 +495,7 @@ mod tests {
             let mut dto = base_dto();
             dto.count = Some(count);
             assert!(
-                validate(dto, &caller_label(), lookup).is_ok(),
+                validate(dto, &caller_label(), &caller_url(), lookup).is_ok(),
                 "count {count}"
             );
         }
@@ -443,7 +505,7 @@ mod tests {
     fn rejects_count_over_the_maximum() {
         let mut dto = base_dto();
         dto.count = Some(1_000_001);
-        let err = validate(dto, &caller_label(), lookup).unwrap_err();
+        let err = validate(dto, &caller_label(), &caller_url(), lookup).unwrap_err();
         assert_eq!(err, ReportError::CountTooLarge);
     }
 
@@ -458,7 +520,7 @@ mod tests {
                 link: None,
             })
             .collect();
-        let err = validate(dto, &caller_label(), lookup).unwrap_err();
+        let err = validate(dto, &caller_label(), &caller_url(), lookup).unwrap_err();
         assert_eq!(err, ReportError::TooManyMessages);
     }
 
@@ -473,7 +535,7 @@ mod tests {
                 link: None,
             })
             .collect();
-        assert!(validate(dto, &caller_label(), lookup).is_ok());
+        assert!(validate(dto, &caller_label(), &caller_url(), lookup).is_ok());
     }
 
     #[test]
@@ -485,7 +547,7 @@ mod tests {
             subject: None,
             link: None,
         }];
-        let err = validate(dto, &caller_label(), lookup).unwrap_err();
+        let err = validate(dto, &caller_label(), &caller_url(), lookup).unwrap_err();
         assert_eq!(err, ReportError::StringTooLong);
     }
 
@@ -498,7 +560,7 @@ mod tests {
             subject: None,
             link: None,
         }];
-        assert!(validate(dto, &caller_label(), lookup).is_ok());
+        assert!(validate(dto, &caller_label(), &caller_url(), lookup).is_ok());
     }
 
     #[test]
@@ -510,7 +572,7 @@ mod tests {
             subject: None,
             link: Some("http://mail.google.com/inbox".to_string()),
         }];
-        let err = validate(dto, &caller_label(), lookup).unwrap_err();
+        let err = validate(dto, &caller_label(), &caller_url(), lookup).unwrap_err();
         assert_eq!(err, ReportError::InvalidLink);
     }
 
@@ -523,7 +585,7 @@ mod tests {
             subject: None,
             link: Some("https://evil.example.com/inbox".to_string()),
         }];
-        let err = validate(dto, &caller_label(), lookup).unwrap_err();
+        let err = validate(dto, &caller_label(), &caller_url(), lookup).unwrap_err();
         assert_eq!(err, ReportError::InvalidLink);
     }
 
@@ -531,7 +593,7 @@ mod tests {
     fn rejects_recipe_id_over_64_characters() {
         let mut dto = base_dto();
         dto.recipe_id = "a".repeat(65);
-        let err = validate(dto, &caller_label(), lookup).unwrap_err();
+        let err = validate(dto, &caller_label(), &caller_url(), lookup).unwrap_err();
         assert_eq!(err, ReportError::RecipeIdTooLong);
     }
 
@@ -539,14 +601,14 @@ mod tests {
     fn accepts_recipe_id_at_exactly_64_characters() {
         let mut dto = base_dto();
         dto.recipe_id = "a".repeat(64);
-        assert!(validate(dto, &caller_label(), lookup).is_ok());
+        assert!(validate(dto, &caller_label(), &caller_url(), lookup).is_ok());
     }
 
     #[test]
     fn rejects_recipe_id_with_uppercase_or_symbols() {
         let mut dto = base_dto();
         dto.recipe_id = "Gmail_v2".to_string();
-        let err = validate(dto, &caller_label(), lookup).unwrap_err();
+        let err = validate(dto, &caller_label(), &caller_url(), lookup).unwrap_err();
         assert_eq!(err, ReportError::RecipeIdInvalidChars);
     }
 
@@ -554,7 +616,7 @@ mod tests {
     fn rejects_empty_recipe_id() {
         let mut dto = base_dto();
         dto.recipe_id = String::new();
-        let err = validate(dto, &caller_label(), lookup).unwrap_err();
+        let err = validate(dto, &caller_label(), &caller_url(), lookup).unwrap_err();
         assert_eq!(err, ReportError::RecipeIdInvalidChars);
     }
 
@@ -564,7 +626,7 @@ mod tests {
         dto.icon_candidates = (0..9)
             .map(|i| format!("{SERVICE_ORIGIN}/icon{i}.png"))
             .collect();
-        let err = validate(dto, &caller_label(), lookup).unwrap_err();
+        let err = validate(dto, &caller_label(), &caller_url(), lookup).unwrap_err();
         assert_eq!(err, ReportError::TooManyIconCandidates);
     }
 
@@ -574,14 +636,14 @@ mod tests {
         dto.icon_candidates = (0..8)
             .map(|i| format!("{SERVICE_ORIGIN}/icon{i}.png"))
             .collect();
-        assert!(validate(dto, &caller_label(), lookup).is_ok());
+        assert!(validate(dto, &caller_label(), &caller_url(), lookup).is_ok());
     }
 
     #[test]
     fn rejects_a_non_http_icon_candidate_scheme() {
         let mut dto = base_dto();
         dto.icon_candidates = vec!["ftp://mail.google.com/icon.png".to_string()];
-        let err = validate(dto, &caller_label(), lookup).unwrap_err();
+        let err = validate(dto, &caller_label(), &caller_url(), lookup).unwrap_err();
         assert_eq!(err, ReportError::IconCandidateInvalidScheme);
     }
 
@@ -589,14 +651,14 @@ mod tests {
     fn accepts_an_http_icon_candidate() {
         let mut dto = base_dto();
         dto.icon_candidates = vec!["http://mail.google.com/icon.png".to_string()];
-        assert!(validate(dto, &caller_label(), lookup).is_ok());
+        assert!(validate(dto, &caller_label(), &caller_url(), lookup).is_ok());
     }
 
     #[test]
     fn rejects_an_invalid_icon_candidate_url() {
         let mut dto = base_dto();
         dto.icon_candidates = vec!["not a url".to_string()];
-        let err = validate(dto, &caller_label(), lookup).unwrap_err();
+        let err = validate(dto, &caller_label(), &caller_url(), lookup).unwrap_err();
         assert_eq!(err, ReportError::IconCandidateInvalidUrl);
     }
 
@@ -604,7 +666,7 @@ mod tests {
     fn rejects_loopback_ipv4_icon_candidate() {
         let mut dto = base_dto();
         dto.icon_candidates = vec!["http://127.0.0.1/icon.png".to_string()];
-        let err = validate(dto, &caller_label(), lookup).unwrap_err();
+        let err = validate(dto, &caller_label(), &caller_url(), lookup).unwrap_err();
         assert_eq!(err, ReportError::IconCandidateDisallowedHost);
     }
 
@@ -612,7 +674,7 @@ mod tests {
     fn rejects_private_ipv4_icon_candidate() {
         let mut dto = base_dto();
         dto.icon_candidates = vec!["http://10.0.0.5/icon.png".to_string()];
-        let err = validate(dto, &caller_label(), lookup).unwrap_err();
+        let err = validate(dto, &caller_label(), &caller_url(), lookup).unwrap_err();
         assert_eq!(err, ReportError::IconCandidateDisallowedHost);
     }
 
@@ -620,7 +682,7 @@ mod tests {
     fn rejects_link_local_ipv4_icon_candidate() {
         let mut dto = base_dto();
         dto.icon_candidates = vec!["http://169.254.1.1/icon.png".to_string()];
-        let err = validate(dto, &caller_label(), lookup).unwrap_err();
+        let err = validate(dto, &caller_label(), &caller_url(), lookup).unwrap_err();
         assert_eq!(err, ReportError::IconCandidateDisallowedHost);
     }
 
@@ -628,7 +690,7 @@ mod tests {
     fn rejects_loopback_ipv6_icon_candidate() {
         let mut dto = base_dto();
         dto.icon_candidates = vec!["http://[::1]/icon.png".to_string()];
-        let err = validate(dto, &caller_label(), lookup).unwrap_err();
+        let err = validate(dto, &caller_label(), &caller_url(), lookup).unwrap_err();
         assert_eq!(err, ReportError::IconCandidateDisallowedHost);
     }
 
@@ -636,7 +698,7 @@ mod tests {
     fn rejects_link_local_ipv6_icon_candidate() {
         let mut dto = base_dto();
         dto.icon_candidates = vec!["http://[fe80::1]/icon.png".to_string()];
-        let err = validate(dto, &caller_label(), lookup).unwrap_err();
+        let err = validate(dto, &caller_label(), &caller_url(), lookup).unwrap_err();
         assert_eq!(err, ReportError::IconCandidateDisallowedHost);
     }
 
@@ -644,7 +706,7 @@ mod tests {
     fn rejects_unique_local_ipv6_icon_candidate() {
         let mut dto = base_dto();
         dto.icon_candidates = vec!["http://[fc00::1]/icon.png".to_string()];
-        let err = validate(dto, &caller_label(), lookup).unwrap_err();
+        let err = validate(dto, &caller_label(), &caller_url(), lookup).unwrap_err();
         assert_eq!(err, ReportError::IconCandidateDisallowedHost);
     }
 
@@ -652,7 +714,7 @@ mod tests {
     fn rejects_ipv4_mapped_ipv6_loopback_icon_candidate() {
         let mut dto = base_dto();
         dto.icon_candidates = vec!["http://[::ffff:127.0.0.1]/icon.png".to_string()];
-        let err = validate(dto, &caller_label(), lookup).unwrap_err();
+        let err = validate(dto, &caller_label(), &caller_url(), lookup).unwrap_err();
         assert_eq!(err, ReportError::IconCandidateDisallowedHost);
     }
 
@@ -660,7 +722,7 @@ mod tests {
     fn rejects_ipv4_mapped_ipv6_private_icon_candidate() {
         let mut dto = base_dto();
         dto.icon_candidates = vec!["http://[::ffff:10.1.2.3]/icon.png".to_string()];
-        let err = validate(dto, &caller_label(), lookup).unwrap_err();
+        let err = validate(dto, &caller_label(), &caller_url(), lookup).unwrap_err();
         assert_eq!(err, ReportError::IconCandidateDisallowedHost);
     }
 
@@ -668,7 +730,7 @@ mod tests {
     fn accepts_a_public_ipv4_icon_candidate() {
         let mut dto = base_dto();
         dto.icon_candidates = vec!["http://93.184.216.34/icon.png".to_string()];
-        assert!(validate(dto, &caller_label(), lookup).is_ok());
+        assert!(validate(dto, &caller_label(), &caller_url(), lookup).is_ok());
     }
 
     #[test]
@@ -677,7 +739,7 @@ mod tests {
         // name is accepted regardless of what it might resolve to.
         let mut dto = base_dto();
         dto.icon_candidates = vec!["https://mail.google.com/favicon.ico".to_string()];
-        assert!(validate(dto, &caller_label(), lookup).is_ok());
+        assert!(validate(dto, &caller_label(), &caller_url(), lookup).is_ok());
     }
 
     #[test]

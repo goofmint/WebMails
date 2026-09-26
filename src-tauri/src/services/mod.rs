@@ -5,11 +5,13 @@
 //! path, the open [`StateStore`], a reference to the [`WebviewHost`] and
 //! the profile backend, and enough bookkeeping — which service ids have a
 //! live webview, which are still waiting for their staggered startup
-//! turn, which is active, and any per-service creation error — to
-//! reconcile a [`ConfigEdit`] into webview operations.
-//! [`reconcile::diff`] computes *what* to do, purely; this module is the
-//! only place that actually calls the [`WebviewHost`] or the profile
-//! backend.
+//! turn, which is active, any per-service creation error, and which
+//! `(service id, origin)` pairs already have a runtime capability granted
+//! (design.md §2.2.6) — to reconcile a [`ConfigEdit`] into webview
+//! operations. [`reconcile::diff`] computes *what* to do, purely; this
+//! module is the only place that actually calls the [`WebviewHost`], the
+//! profile backend, or [`crate::agent_bridge::capability`]'s runtime
+//! capability registration (before every `host.create`).
 //!
 //! Every public method locks [`ServiceManager::inner`] — a
 //! [`tauri::async_runtime::Mutex`] (an async mutex, so the lock survives
@@ -41,6 +43,7 @@ use tauri::{AppHandle, Emitter, Wry};
 use url::Url;
 use uuid::Uuid;
 
+use crate::agent_bridge::capability;
 use crate::config::{
     self, Config, ConfigEdit, ConfigError, IconSource, ProfileName, ServiceConfig, ServiceId,
     ServicePatch, Settings, SettingsPatch,
@@ -104,6 +107,14 @@ struct Ready {
     /// `unread` store's `ServiceStatus` instead; until then this is just
     /// where the failure is kept.
     create_errors: BTreeMap<ServiceId, String>,
+    /// Every `(service id, origin)` pair a runtime capability has already
+    /// been granted for, for the life of the process (design.md §2.2.6;
+    /// see `agent_bridge::capability`'s module doc for why re-granting an
+    /// already-granted pair would be wasted rather than harmful, and why
+    /// this bookkeeping is an idempotency optimization only — it never
+    /// removes an entry, including for a removed or recreated-elsewhere
+    /// service, since Tauri has no API to revoke a runtime capability).
+    granted_capability_origins: BTreeMap<ServiceId, BTreeSet<String>>,
 }
 
 /// Either [`Ready`], or the error [`config::load_or_init`] /
@@ -167,6 +178,7 @@ impl ServiceManager {
                 pending: Vec::new(),
                 active: None,
                 create_errors: BTreeMap::new(),
+                granted_capability_origins: BTreeMap::new(),
             })),
             app_nap: AppNapGuard::new(),
         }
@@ -316,10 +328,19 @@ impl ServiceManager {
     /// (or before a `Create`/`Recreate` op runs) is silently skipped. On
     /// the remaining path, resolves the profile UUID inside
     /// `StateStore::update` (design.md §2.2.3), so a freshly minted UUID
-    /// is captured by that update's own dirty flag, then calls
-    /// `host.create`. Records the outcome in `created`/`create_errors`
-    /// either way; callers log the error themselves, with context-specific
-    /// wording (startup vs. an edit).
+    /// is captured by that update's own dirty flag; registers this
+    /// service's runtime capability if its current origin has not
+    /// already been granted (design.md §2.2.6; `agent_bridge::capability`'s
+    /// module doc explains the identifier scheme and why granting a new
+    /// origin never revokes an old one); builds the injection script; and
+    /// finally calls `host.create`. Records the outcome in
+    /// `created`/`create_errors` either way; callers log the error
+    /// themselves, with context-specific wording (startup vs. an edit).
+    ///
+    /// A capability-registration or injection-script-building failure is
+    /// a create error on the same path as a `host.create` failure
+    /// (design.md §5.1's "Webview creation failure" → `NeedsAttention
+    /// (CreateFailed)`): the webview is never created.
     fn create_one_locked(&self, ready: &mut Ready, id: &ServiceId) -> AppResult<()> {
         // A service's startup turn has now arrived, whether or not it
         // still exists to be created — see `pending`'s doc comment.
@@ -343,11 +364,54 @@ impl ServiceManager {
             }
         };
 
+        let origin = match capability::service_origin(&service.url) {
+            Ok(origin) => origin,
+            Err(err) => {
+                let err = AppError::Webview(format!(
+                    "service '{id}' has an opaque origin and cannot be granted a runtime capability: {err}"
+                ));
+                ready.create_errors.insert(id.clone(), err.to_string());
+                return Err(err);
+            }
+        };
+
+        let already_granted = ready
+            .granted_capability_origins
+            .get(id)
+            .is_some_and(|origins| origins.contains(&origin));
+        if !already_granted {
+            if let Err(err) = capability::ensure_capability(&self.app_handle, id, &origin) {
+                ready.create_errors.insert(id.clone(), err.to_string());
+                return Err(err);
+            }
+            ready
+                .granted_capability_origins
+                .entry(id.clone())
+                .or_default()
+                .insert(origin.clone());
+        }
+
+        let init_script = match capability::build_injection_script(
+            &service.id,
+            &service.url,
+            &origin,
+            ready.config.settings.reconcile_interval_seconds,
+        ) {
+            Ok(script) => script,
+            Err(err) => {
+                let err = AppError::Webview(format!(
+                    "failed to build agent injection script for service '{id}': {err}"
+                ));
+                ready.create_errors.insert(id.clone(), err.to_string());
+                return Err(err);
+            }
+        };
+
         let spec = ServiceWebviewSpec {
             id: service.id.clone(),
             url: service.url.clone(),
             profile: uuid,
-            init_script: String::new(),
+            init_script,
             on_page_load: Box::new(|_webview, _payload| {}),
         };
 
