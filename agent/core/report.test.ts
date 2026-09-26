@@ -129,6 +129,12 @@ describe("createReporter", () => {
     expect(errorSpy).toHaveBeenCalled();
   });
 
+  // `report()` always defers the actual `invoke` call by a microtask (see
+  // report.ts's `drain`), so a report only becomes genuinely "in flight"
+  // once that tick has run. These tests wait for that before firing more
+  // reports, the way a real in-flight invoke would be observed.
+  const tick = (): Promise<void> => Promise.resolve();
+
   it("does not start the second invoke until the first one settles, and preserves order", async () => {
     let resolveFirstInvoke: (() => void) | undefined;
     const invoke = vi
@@ -149,17 +155,20 @@ describe("createReporter", () => {
       invoke,
     });
 
-    // Fire both reports without awaiting the first, the way loop.ts does
-    // (`void options.report(result)`).
     const firstPromise = report({ count: 1, messages: [] });
-    const secondPromise = report({ count: 2, messages: [] });
 
-    // Let the microtask queue run far enough for the first invoke to
-    // start; the second must not have started yet since the first is
-    // still pending.
-    await Promise.resolve();
+    // Let the first invoke actually start before firing the second
+    // report, so it is genuinely in flight rather than still sitting in
+    // the pending slot itself.
+    await tick();
     expect(invoke).toHaveBeenCalledTimes(1);
     expect(invoke.mock.calls[0]?.[0]).toMatchObject({ count: 1 });
+
+    const secondPromise = report({ count: 2, messages: [] });
+
+    // The second report must not have started yet since the first is
+    // still pending.
+    expect(invoke).toHaveBeenCalledTimes(1);
 
     resolveFirstInvoke?.();
     await firstPromise;
@@ -170,9 +179,15 @@ describe("createReporter", () => {
   });
 
   it("does not let a failed invoke block a later one", async () => {
+    let rejectFirstInvoke: ((error: Error) => void) | undefined;
     const invoke = vi
       .fn<ReportInvoke>()
-      .mockRejectedValueOnce(new Error("boom"))
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            rejectFirstInvoke = reject;
+          }),
+      )
       .mockResolvedValueOnce(undefined);
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const report = createReporter({
@@ -185,8 +200,12 @@ describe("createReporter", () => {
     });
 
     const firstPromise = report({ count: 1, messages: [] });
+    await tick();
+    expect(invoke).toHaveBeenCalledTimes(1);
+
     const secondPromise = report({ count: 2, messages: [] });
 
+    rejectFirstInvoke?.(new Error("boom"));
     await expect(firstPromise).resolves.toBeUndefined();
     await expect(secondPromise).resolves.toBeUndefined();
 
@@ -194,5 +213,77 @@ describe("createReporter", () => {
     expect(invoke.mock.calls[0]?.[0]).toMatchObject({ count: 1 });
     expect(invoke.mock.calls[1]?.[0]).toMatchObject({ count: 2 });
     expect(errorSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds the queue to one pending report: three more reports coalesce to the latest", async () => {
+    let resolveFirstInvoke: (() => void) | undefined;
+    const invoke = vi
+      .fn<ReportInvoke>()
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveFirstInvoke = resolve;
+          }),
+      )
+      .mockResolvedValueOnce(undefined);
+    const report = createReporter({
+      serviceId: "svc-1",
+      recipeId: "generic",
+      serviceUrl: SERVICE_URL,
+      document: makeDoc("<html><head></head><body></body></html>"),
+      clock: { now: () => 0 },
+      invoke,
+    });
+
+    const firstPromise = report({ count: 1, messages: [] });
+    await tick();
+    expect(invoke).toHaveBeenCalledTimes(1);
+
+    // Three more reports arrive while the first invoke is still pending;
+    // each newer one replaces the last, so only the final one is ever
+    // sent.
+    const secondPromise = report({ count: 2, messages: [] });
+    const thirdPromise = report({ count: 3, messages: [] });
+    const fourthPromise = report({ count: 4, messages: [] });
+
+    resolveFirstInvoke?.();
+    await firstPromise;
+    await Promise.all([secondPromise, thirdPromise, fourthPromise]);
+
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(invoke.mock.calls[0]?.[0]).toMatchObject({ count: 1 });
+    expect(invoke.mock.calls[1]?.[0]).toMatchObject({ count: 4 });
+  });
+
+  it("carries the icon candidates on the replacement when the report that would have been first is coalesced away", async () => {
+    const invoke = vi.fn<ReportInvoke>().mockResolvedValue(undefined);
+    const doc = makeDoc(
+      '<html><head><link rel="icon" href="/icon.png"></head><body></body></html>',
+    );
+    const report = createReporter({
+      serviceId: "svc-1",
+      recipeId: "generic",
+      serviceUrl: SERVICE_URL,
+      document: doc,
+      clock: { now: () => 0 },
+      invoke,
+    });
+
+    // Fired back-to-back in the same tick, before the first report's
+    // drain microtask has run: the first is superseded and never sent at
+    // all, so it must never receive the icon candidates it would
+    // otherwise have carried.
+    const firstPromise = report({ count: 1, messages: [] });
+    const secondPromise = report({ count: 2, messages: [] });
+
+    await Promise.all([firstPromise, secondPromise]);
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+    const dto = invoke.mock.calls[0]?.[0];
+    expect(dto).toMatchObject({ count: 2 });
+    expect(dto?.iconCandidates).toEqual([
+      "https://mail.example.com/icon.png",
+      "https://mail.example.com/favicon.ico",
+    ]);
   });
 });
