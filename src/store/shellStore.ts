@@ -224,6 +224,13 @@ export function createShellStore(ipc: ShellIpc): ShellStore {
           });
         }
       }),
+      // Icon resolution (Task 1.14) writes a new cached PNG asynchronously
+      // and in the background; the simplest correct reaction is the same
+      // full-snapshot refetch `onServicesChanged` triggers, so the store
+      // never has to merge a partial icon-only update by hand.
+      ipc.onServiceIconChanged(() => {
+        void refresh(gen);
+      }),
     ]);
 
     // Retain every registration that succeeded even if another one

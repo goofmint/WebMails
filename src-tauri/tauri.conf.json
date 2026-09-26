@@ -13,7 +13,11 @@
     "windows": [],
     "security": {
       "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' asset: http://asset.localhost data:; connect-src 'self' ipc: http://ipc.localhost",
-      "devCsp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data:; connect-src 'self' ipc: http://ipc.localhost ws://localhost:5173"
+      "devCsp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data:; connect-src 'self' ipc: http://ipc.localhost ws://localhost:5173",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$APPDATA/icons/**"]
+      }
     }
   },
   "bundle": {

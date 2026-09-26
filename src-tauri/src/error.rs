@@ -49,6 +49,12 @@ pub enum AppError {
     /// line.
     #[error("notification error: {0}")]
     Notification(String),
+
+    /// A `set_icon_override` input was rejected: an invalid URL override
+    /// (design.md §2.2.10, §2.2.12) or a file override that could not be
+    /// copied into `{data_dir}/icons/<id>.src`.
+    #[error("icon error: {0}")]
+    Icon(String),
 }
 
 /// Wraps a Tauri runtime failure (e.g. `Window::add_child`, `Webview::
@@ -75,6 +81,7 @@ impl AppError {
             AppError::Profile(_) => "profile",
             AppError::Webview(_) => "webview",
             AppError::Notification(_) => "notification",
+            AppError::Icon(_) => "icon",
         }
     }
 }
@@ -160,6 +167,14 @@ mod tests {
             value,
             json!({ "kind": "notification", "message": err.to_string() })
         );
+    }
+
+    #[test]
+    fn icon_error_serializes_kind_and_message() {
+        let err = AppError::Icon("icon override URL must be http or https".to_string());
+        let value = serde_json::to_value(&err).expect("serialize");
+        assert_eq!(err.kind(), "icon");
+        assert_eq!(value, json!({ "kind": "icon", "message": err.to_string() }));
     }
 
     #[test]

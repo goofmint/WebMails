@@ -13,12 +13,11 @@
 //! Checks run in the order design.md §2.2.6 lists them, and the first
 //! violation is returned — later checks never run once one fails.
 
-use std::net::Ipv4Addr;
-
-use url::{Host, Url};
+use url::Url;
 
 use crate::config::ServiceId;
 use crate::host;
+use crate::net_guard::is_disallowed_host;
 
 use super::dto::UnreadReportDto;
 
@@ -161,11 +160,12 @@ pub struct ValidMessageRef {
 ///
 /// `service_id` and `count` are read by `report_unread`'s success path
 /// (the log line and the `unread` status store, design.md §2.2.7);
-/// `count` and `messages` are also read by `notify::diff::evaluate`.
-/// `recipe_id`, `observed_at` and `icon_candidates` have no consumer yet
-/// (later tasks: notification text and icon resolution), so they stay
-/// `#[allow(dead_code)]` rather than fabricating a reader that doesn't
-/// exist.
+/// `count` and `messages` are also read by `notify::diff::evaluate`;
+/// `icon_candidates` is read by `report_unread`'s icon-resolution path
+/// (design.md §2.2.10) via [`ValidReport::icon_candidates`].
+/// `recipe_id` and `observed_at` have no consumer yet (a later task:
+/// notification text), so they stay `#[allow(dead_code)]` rather than
+/// fabricating a reader that doesn't exist.
 #[derive(Debug, Clone)]
 pub struct ValidReport {
     service_id: ServiceId,
@@ -175,7 +175,6 @@ pub struct ValidReport {
     recipe_id: String,
     #[allow(dead_code)]
     observed_at: u64,
-    #[allow(dead_code)]
     icon_candidates: Vec<Url>,
 }
 
@@ -196,6 +195,15 @@ impl ValidReport {
     /// (design.md §2.2.9's `notify::diff::evaluate`).
     pub fn messages(&self) -> &[ValidMessageRef] {
         &self.messages
+    }
+
+    /// The report's already-ordered icon candidates (design.md §2.2.10;
+    /// best first: `apple-touch-icon`, then largest `rel=icon`, then
+    /// `/favicon.ico`), for `report_unread` to hand to
+    /// [`crate::services::ServiceManager::record_icon_candidates`] when
+    /// non-empty.
+    pub fn icon_candidates(&self) -> &[Url] {
+        &self.icon_candidates
     }
 }
 
@@ -320,49 +328,6 @@ fn check_len(value: &str) -> Result<(), ReportError> {
     } else {
         Ok(())
     }
-}
-
-/// Whether `host` is a loopback, private or link-local address
-/// (design.md §2.2.6, §2.2.10). A domain name is never resolved (no DNS,
-/// by design), so it is never rejected on this basis — only a literal IP
-/// host can be.
-fn is_disallowed_host(host: &Host<&str>) -> bool {
-    match host {
-        Host::Domain(_) => false,
-        Host::Ipv4(addr) => is_disallowed_ipv4(addr),
-        Host::Ipv6(addr) => is_disallowed_ipv6(addr),
-    }
-}
-
-fn is_disallowed_ipv4(addr: &Ipv4Addr) -> bool {
-    addr.is_loopback() || addr.is_private() || addr.is_link_local()
-}
-
-/// Segment-based IPv6 range checks (design.md §2.2.10): loopback
-/// (`::1`), IPv4-mapped (`::ffff:0:0/96`, converted and re-checked
-/// against [`is_disallowed_ipv4`]), unicast link-local (`fe80::/10`) and
-/// unique local (`fc00::/7`, IPv6's private-equivalent range).
-fn is_disallowed_ipv6(addr: &std::net::Ipv6Addr) -> bool {
-    if addr.is_loopback() {
-        return true;
-    }
-    let segments = addr.segments();
-    if segments[0..5] == [0, 0, 0, 0, 0] && segments[5] == 0xffff {
-        let mapped = Ipv4Addr::new(
-            (segments[6] >> 8) as u8,
-            (segments[6] & 0xff) as u8,
-            (segments[7] >> 8) as u8,
-            (segments[7] & 0xff) as u8,
-        );
-        return is_disallowed_ipv4(&mapped);
-    }
-    if segments[0] & 0xffc0 == 0xfe80 {
-        return true; // fe80::/10, unicast link-local
-    }
-    if segments[0] & 0xfe00 == 0xfc00 {
-        return true; // fc00::/7, unique local
-    }
-    false
 }
 
 #[cfg(test)]

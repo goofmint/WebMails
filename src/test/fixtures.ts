@@ -26,6 +26,7 @@ export function snapshot(overrides: Partial<Snapshot> = {}): Snapshot {
     statuses: {},
     sidebarWidth: 64,
     activeServiceId: null,
+    icons: {},
     ...overrides,
   };
 }

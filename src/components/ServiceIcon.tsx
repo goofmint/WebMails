@@ -1,18 +1,23 @@
 /**
- * One sidebar entry (Task 1.10; design.md §2.2.13). Renders a letter
- * placeholder for `favicon`/`file` icon sources (real icon resolution is
- * Task 1.14) and an `<img>` for a `url` source, falling back to the letter
- * placeholder if that image fails to load. Also renders this service's
- * status `Badge` (Task 2.10), top-right, over the icon.
+ * One sidebar entry (Task 1.10; design.md §2.2.13). Renders the cached icon
+ * PNG (Task 1.14; design.md §2.2.10, §11.1) through Tauri's asset protocol
+ * when one exists for this service, falling back to a generated letter
+ * icon — coloured deterministically from the service id — when there is no
+ * cache yet, or the cached image fails to load. Also renders this
+ * service's status `Badge` (Task 2.10), top-right, over the icon.
  */
 
 import { useState, type DragEvent } from "react";
-import type { ServiceConfig, ServiceStatus } from "../ipc";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import type { CachedIconInfo, ServiceConfig, ServiceStatus } from "../ipc";
 import { Badge } from "./Badge";
 import { badgeLabel } from "./badgeLabel";
+import { colorForServiceId, initialForService } from "../lib/color";
 
 export interface ServiceIconProps {
   readonly service: ServiceConfig;
+  /** From `Snapshot.icons[service.id]` — `undefined` when nothing is cached. */
+  readonly cachedIcon: CachedIconInfo | undefined;
   readonly selected: boolean;
   /** Sidebar width in px, from `Snapshot.sidebarWidth` — never hard-coded. */
   readonly size: number;
@@ -32,6 +37,7 @@ export interface ServiceIconProps {
 
 export function ServiceIcon({
   service,
+  cachedIcon,
   selected,
   size,
   draggable,
@@ -44,9 +50,16 @@ export function ServiceIcon({
   onDrop,
   onDragEnd,
 }: ServiceIconProps) {
-  const [imageFailed, setImageFailed] = useState(false);
-  const showImage = service.icon.source === "url" && !imageFailed;
-  const initial = service.name.charAt(0).toUpperCase();
+  // Tracks the *source* (path + cache-busting version) that last failed to
+  // load, not just whether some image ever failed: a stale failure must not
+  // suppress a newer cached PNG (a later `service-icon-changed` bumps
+  // `cachedIcon.version`, producing a different `src`), so only an exact
+  // match with the current source counts as "still failed".
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const src = cachedIcon ? `${convertFileSrc(cachedIcon.path)}?v=${cachedIcon.version}` : undefined;
+  const showImage = src !== undefined && src !== failedSrc;
+  const initial = initialForService(service.name, service.id);
+  const letterColor = colorForServiceId(service.id);
   // Same label Badge itself would render (or `null` if Badge renders
   // nothing) — so the accessible name only mentions status when the Badge
   // is actually visible, and never drifts from what it says.
@@ -93,17 +106,19 @@ export function ServiceIcon({
       onDrop={handleDrop}
       onDragEnd={onDragEnd}
     >
-      {showImage ? (
+      {showImage && src !== undefined ? (
         <img
           className="service-icon__image"
-          src={service.icon.source === "url" ? service.icon.value : ""}
+          src={src}
           alt=""
           onError={() => {
-            setImageFailed(true);
+            setFailedSrc(src);
           }}
         />
       ) : (
-        <span className="service-icon__initial">{initial}</span>
+        <span className="service-icon__initial" style={{ backgroundColor: letterColor }}>
+          {initial}
+        </span>
       )}
       {status !== undefined && <Badge status={status} enabled={badgesEnabled} />}
     </button>

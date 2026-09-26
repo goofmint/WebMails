@@ -17,6 +17,7 @@ export interface MockShellIpc extends ShellIpc {
   emitServicesChanged(): void;
   emitSelectService(id: string): void;
   emitStatusChanged(serviceId: string, status: ServiceStatus): void;
+  emitServiceIconChanged(id: string): void;
 }
 
 /** Creates a mock `ShellIpc` whose `getSnapshot` initially resolves to `initialSnapshot`. */
@@ -27,6 +28,7 @@ export function createMockShellIpc(initialSnapshot: Snapshot): MockShellIpc {
     readonly serviceId: string;
     readonly status: ServiceStatus;
   }) => void)[] = [];
+  let serviceIconChangedListeners: ((payload: { readonly id: string }) => void)[] = [];
 
   const getSnapshot = vi.fn((): Promise<Snapshot> => Promise.resolve(initialSnapshot));
   const selectService = vi.fn((): Promise<void> => Promise.resolve());
@@ -60,6 +62,17 @@ export function createMockShellIpc(initialSnapshot: Snapshot): MockShellIpc {
     });
   }
 
+  function onServiceIconChanged(
+    callback: (payload: { readonly id: string }) => void,
+  ): Promise<UnlistenFn> {
+    serviceIconChangedListeners.push(callback);
+    return Promise.resolve(() => {
+      serviceIconChangedListeners = serviceIconChangedListeners.filter(
+        (listener) => listener !== callback,
+      );
+    });
+  }
+
   return {
     getSnapshot,
     selectService,
@@ -68,6 +81,7 @@ export function createMockShellIpc(initialSnapshot: Snapshot): MockShellIpc {
     onServicesChanged,
     onSelectService,
     onStatusChanged,
+    onServiceIconChanged,
     emitServicesChanged() {
       for (const listener of servicesChangedListeners) {
         listener();
@@ -81,6 +95,11 @@ export function createMockShellIpc(initialSnapshot: Snapshot): MockShellIpc {
     emitStatusChanged(serviceId: string, status: ServiceStatus) {
       for (const listener of statusChangedListeners) {
         listener({ serviceId, status });
+      }
+    },
+    emitServiceIconChanged(id: string) {
+      for (const listener of serviceIconChangedListeners) {
+        listener({ id });
       }
     },
   };

@@ -7,6 +7,11 @@
 //! here. This module does not touch `capabilities/default.json` (the
 //! static shell capability) at all — only runtime capabilities added via
 //! [`capability::ensure_capability`].
+//!
+//! Task 1.14 adds one more consumer of a validated report: its
+//! `iconCandidates`, when non-empty, are handed to
+//! [`crate::services::ServiceManager::record_icon_candidates`] — see
+//! [`report_unread`]'s own doc comment.
 
 pub mod capability;
 mod dto;
@@ -61,6 +66,8 @@ pub(crate) use validate::validate;
 /// On success, the report's count feeds the `unread` status store
 /// (design.md §2.2.7: `Some(n)` → `Ok`, `None` →
 /// `NeedsAttention(ReportedNone)`) via [`ServiceManager::record_report`],
+/// plus (Task 1.14) a validated report's *icon candidates*, when
+/// non-empty, are handed to [`ServiceManager::record_icon_candidates`];
 /// then a debug log line naming the service id is emitted and `Ok(())`
 /// is returned. On rejection, only the service id and the rejection's
 /// `kind()` are logged (never the report's contents), and the report is
@@ -116,6 +123,21 @@ pub async fn report_unread(
                 "accepted unread report"
             );
             dispatch_notification(services.inner(), dispatcher.inner(), &valid_report).await;
+
+            // Task 1.14 (design.md §2.2.10): a validated report's *icon
+            // candidates*, when non-empty, are consumed here too.
+            let candidates = valid_report.icon_candidates();
+            if !candidates.is_empty() {
+                let manager = Arc::clone(services.inner());
+                let service_id = valid_report.service_id().clone();
+                let candidates = candidates.to_vec();
+                if let Some(icon_source) = manager
+                    .record_icon_candidates(&service_id, candidates)
+                    .await
+                {
+                    ServiceManager::spawn_icon_resolve(&manager, service_id, icon_source);
+                }
+            }
             Ok(())
         }
         Err(err) => {
