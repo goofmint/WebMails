@@ -176,8 +176,9 @@ mod tests {
             icon_candidates: Vec::new(),
         };
         let label = host::service_label(&ServiceId::new(SERVICE_ID).expect("valid id"));
+        let caller_url = Url::parse(SERVICE_ORIGIN).expect("valid url");
         let lookup = |_id: &ServiceId| Some(Url::parse(SERVICE_ORIGIN).expect("valid url"));
-        validate(dto, &label, lookup).expect("report should validate")
+        validate(dto, &label, &caller_url, lookup).expect("report should validate")
     }
 
     fn message(id: &str) -> MessageRefDto {
