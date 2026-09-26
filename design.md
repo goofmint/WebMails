@@ -197,6 +197,7 @@ pub struct State {
 
 - The file is written atomically, debounced (at most once per second, and on exit).
 - If the file is missing on first launch, an empty state is created. If a file exists but cannot be parsed, that is an error surfaced in the UI. It is never silently replaced.
+- `StalenessStats.last_at` is the time (Unix epoch ms) `count` was last incremented — i.e. the last time the service was marked `Stale` (§2.2.8) — never a report time. A service's last-*report* time is not persisted here; it lives only in the liveness monitor's in-memory tracking (§2.2.8), which `get_diagnostics` (§2.2.12) reads directly.
 
 #### 2.2.3 `profile`
 
@@ -395,7 +396,7 @@ The static capability `capabilities/shell.json` grants these commands to the `sh
 | `set_icon_override` | `{ id, source: favicon \| file(path) \| url }` | — |
 | `refresh_icon` | `{ id }` | — |
 | `reload_service` | `{ id }` | — |
-| `get_diagnostics` | — | per-service staleness counts, last report age, current status |
+| `get_diagnostics` | — | `{ services: [{ serviceId, name, status, lastReportAgeMs, staleCount, lastStaleAt }] }`, one entry per configured service in sidebar order; `lastReportAgeMs` is `null` for a service that has never reported, `lastStaleAt` is `null` before its first stale episode |
 | `open_settings` | — | opens or focuses the settings window |
 
 Events sent to the shell: `services-changed`, `status-changed`, `select-service`.
@@ -419,7 +420,7 @@ Events sent to the shell: `services-changed`, `status-changed`, `select-service`
   - Delete confirmation, with the "delete session data" option shown only for isolated profiles.
   - Global settings: every `[settings]` key.
   - Recipe panel (§14): recipe name, strategy, and what it reads, from `recipe.describe()`.
-  - Diagnostics: staleness history (§9.4).
+  - Diagnostics (§9.4): a table (service name, status, last report age, stale count, last stale time) from `get_diagnostics`, with a manual refresh button; also refetched on `services-changed`.
 - **State management:** React context plus `useSyncExternalStore` over a small store fed by `get_snapshot` and the events. No state library.
 
 #### 2.2.14 Agent (`agent/`)

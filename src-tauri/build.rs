@@ -24,6 +24,7 @@ fn main() {
             "reload_service",
             "set_icon_override",
             "refresh_icon",
+            "get_diagnostics",
             // Task 2.1 (design.md §2.2.6): granted only through the runtime
             // per-service capability (Task 2.2), never through shell.json.
             "report_unread",

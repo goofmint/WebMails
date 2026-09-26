@@ -56,6 +56,7 @@ pub fn run() {
             commands::reload_service,
             commands::set_icon_override,
             commands::refresh_icon,
+            commands::get_diagnostics,
             agent_bridge::report_unread,
         ])
         .setup(|app| {
