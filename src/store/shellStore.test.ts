@@ -472,4 +472,29 @@ describe("createShellStore", () => {
     // ...while the rest of that snapshot is still applied.
     expect(state.snapshot.services).toHaveLength(1);
   });
+
+  it("keeps a select-service choice that arrived before the store's first snapshot", async () => {
+    const ipc = createMockShellIpc(snapshot({ activeServiceId: "gmail" }));
+    const store = createShellStore(ipc);
+
+    const initialSnapshot = createDeferred<Snapshot>();
+    ipc.getSnapshot.mockReturnValueOnce(initialSnapshot.promise);
+
+    store.start();
+    await vi.waitFor(() => expect(ipc.getSnapshot).toHaveBeenCalledTimes(1));
+    expect(store.getState()).toEqual({ status: "loading" });
+
+    // A select-service event arrives before the store's very first snapshot
+    // — `state` is still "loading", so there is no `selectedId` field to
+    // stash this in yet.
+    ipc.emitSelectService("icloud");
+    expect(store.getState()).toEqual({ status: "loading" });
+
+    initialSnapshot.resolve(snapshot({ activeServiceId: "gmail" }));
+    await initialSnapshot.promise;
+
+    const state = store.getState();
+    if (state.status !== "ready") throw new Error("expected ready state");
+    expect(state.selectedId).toBe("icloud");
+  });
 });

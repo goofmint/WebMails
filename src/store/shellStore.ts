@@ -70,8 +70,14 @@ export function createShellStore(ipc: ShellIpc): ShellStore {
   // it starts. If this has moved on by the time a pending refresh's
   // snapshot comes back, that snapshot's `activeServiceId` is older than
   // the selection the user/backend has since made, so refresh() keeps
-  // `state.selectedId` instead of clobbering it.
+  // `latestSelectedId` instead of clobbering it.
   let selectionSeq = 0;
+  // The id from the most recent selectedId-choosing event, tracked
+  // independently of `state` — a `select-service` event (or select())
+  // can arrive while `state` is still "loading" or "error", when there is
+  // no `selectedId` field to stash it in, and it must still survive until
+  // the snapshot that follows.
+  let latestSelectedId: string | null = null;
 
   function getState(): ShellState {
     return state;
@@ -131,13 +137,12 @@ export function createShellStore(ipc: ShellIpc): ShellStore {
       // The backend is authoritative for which service is active
       // (`snapshot.activeServiceId`), so a refetch normally re-syncs
       // `selectedId` to it — unless a newer selection has happened while
-      // this fetch was pending, in which case that selection wins and only
-      // the rest of the snapshot (services/statuses/etc.) is applied.
+      // this fetch was pending, in which case that selection wins (even if
+      // `state` was still "loading"/"error" when it arrived, so there was
+      // no `state.selectedId` to read it back from) and only the rest of
+      // the snapshot (services/statuses/etc.) is applied.
       const keepNewerSelection = selectionSeq !== selectionSeqAtStart;
-      const selectedId =
-        keepNewerSelection && state.status === "ready"
-          ? state.selectedId
-          : snapshot.activeServiceId;
+      const selectedId = keepNewerSelection ? latestSelectedId : snapshot.activeServiceId;
       setState({ status: "ready", snapshot, selectedId });
     } catch (caughtError) {
       if (isStaleRefresh(gen, seq)) {
@@ -154,6 +159,7 @@ export function createShellStore(ipc: ShellIpc): ShellStore {
       }),
       ipc.onSelectService(({ id }) => {
         selectionSeq += 1;
+        latestSelectedId = id;
         if (state.status === "ready") {
           setState({ ...state, selectedId: id });
         }
@@ -230,6 +236,7 @@ export function createShellStore(ipc: ShellIpc): ShellStore {
     // under, not whatever `generation` holds once the catch runs.
     const gen = generation;
     selectionSeq += 1;
+    latestSelectedId = id;
     setState({ ...state, selectedId: id });
     ipc.selectService(id).catch((caughtError: unknown) => {
       console.error("selectService failed:", errorMessage(caughtError));
