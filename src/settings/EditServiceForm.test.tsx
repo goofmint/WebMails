@@ -12,6 +12,7 @@ function renderForm(overrides: Parameters<typeof service>[0] = {}) {
     statuses: {},
     sidebarWidth: 64,
     activeServiceId: null,
+    icons: {},
   });
   const onClose = () => {};
   render(
@@ -112,6 +113,7 @@ describe("EditServiceForm", () => {
       statuses: {},
       sidebarWidth: 64,
       activeServiceId: null,
+      icons: {},
     });
     let closed = false;
     render(
