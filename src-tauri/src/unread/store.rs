@@ -90,6 +90,17 @@ impl StatusStore {
         self.set(id, ServiceStatus::off_origin())
     }
 
+    /// Sets `id`'s status to [`ServiceStatus::Stale`] (design.md §2.2.8) —
+    /// called by `liveness::LivenessRuntime` when the liveness state
+    /// machine's `MarkStale` action fires for `id`. Unconditional like
+    /// every other mutator here: [`Self::set`]'s own change detection is
+    /// what keeps a repeated `MarkStale` (the liveness machine never emits
+    /// one for a service already in its `Reloaded` phase) from re-emitting
+    /// `status-changed`.
+    pub fn mark_stale(&mut self, id: &ServiceId) -> Option<StatusChanged> {
+        self.set(id, ServiceStatus::Stale)
+    }
+
     /// Unregisters `id`: no further report or page-load reaches it until
     /// (if ever) [`Self::mark_loading`] registers it again. No event is
     /// emitted — the shell already learns of the removal via
@@ -325,6 +336,27 @@ mod tests {
             .record_report(&id("gmail"), Some(5))
             .expect("should change");
         assert_eq!(changed.status, ServiceStatus::Ok { count: 5 });
+    }
+
+    #[test]
+    fn mark_stale_transitions_and_emits() {
+        let mut store = StatusStore::new();
+        store.mark_loading(&id("gmail"));
+        store.record_report(&id("gmail"), Some(3));
+        let changed = store.mark_stale(&id("gmail")).expect("should change");
+        assert_eq!(changed.status, ServiceStatus::Stale);
+        assert_eq!(
+            store.statuses().get(&id("gmail")),
+            Some(&ServiceStatus::Stale)
+        );
+    }
+
+    #[test]
+    fn mark_stale_twice_does_not_emit_the_second_time() {
+        let mut store = StatusStore::new();
+        store.mark_loading(&id("gmail"));
+        store.mark_stale(&id("gmail"));
+        assert_eq!(store.mark_stale(&id("gmail")), None);
     }
 
     #[test]

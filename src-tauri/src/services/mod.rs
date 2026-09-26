@@ -101,7 +101,14 @@ struct Ready {
     /// every successful [`ServiceManager::apply_edit_inner`] call, even
     /// when a webview operation the edit implies then fails.
     config: Config,
-    state: StateStore,
+    /// Shared with `liveness::LivenessRuntime` (Task 3.2), which persists
+    /// staleness counters and last-report times into the same
+    /// `state.json` through the same debounced worker — an `Arc` so both
+    /// owners can call `update`/`read` on the one open store rather than
+    /// each opening (and racing to save) their own. Every existing call
+    /// site here already goes through `&StateStore` methods, which `Arc`
+    /// derefs to unchanged.
+    state: Arc<StateStore>,
     /// Service ids with a live webview: `host.create` has succeeded for
     /// them and `host.destroy` has not since.
     created: BTreeSet<ServiceId>,
@@ -175,7 +182,7 @@ impl ServiceManager {
         app_handle: AppHandle<Wry>,
         config_path: PathBuf,
         config: Config,
-        state: StateStore,
+        state: Arc<StateStore>,
     ) -> Self {
         ServiceManager {
             host,
@@ -751,6 +758,39 @@ impl ServiceManager {
         self.host.reload(id)
     }
 
+    /// Destroys and recreates `id`'s webview in place (design.md §2.2.8:
+    /// the liveness recovery step after a reload does not clear
+    /// staleness). Reuses [`Self::execute_recreate`] — the same path
+    /// `update_service` already takes when `url`/`profile` changes — under
+    /// `self.inner`'s lock, so it never races a concurrent edit.
+    ///
+    /// A no-op, not an error, if `id` is no longer a configured service
+    /// (removed by a concurrent edit) or has no live webview (still
+    /// waiting for its staggered startup turn, or never created): there is
+    /// nothing to recreate in either case, and `liveness::LivenessRuntime`
+    /// (the only caller) treats both the same as any other liveness
+    /// action outcome — logged, not retried beyond the design.
+    pub async fn recreate_service(&self, id: &ServiceId) -> AppResult<()> {
+        let mut guard = self.inner.lock().await;
+        let ready = match &mut *guard {
+            ManagerState::Failed(err) => return Err(not_ready(err)),
+            ManagerState::Ready(ready) => ready,
+        };
+        if !ready
+            .config
+            .services
+            .iter()
+            .any(|service| service.id == *id)
+        {
+            return Ok(());
+        }
+        if !ready.created.contains(id) {
+            return Ok(());
+        }
+        self.execute_recreate(ready, id);
+        Ok(())
+    }
+
     /// A read-only snapshot of everything `get_snapshot` (Task 1.9) needs
     /// from this manager: the current settings and services when this
     /// manager started successfully, or the structured [`ConfigError`]
@@ -960,6 +1000,16 @@ impl ServiceManager {
         {
             tracing::warn!("failed to emit {SELECT_SERVICE_EVENT}: {err}");
         }
+    }
+
+    /// The shared `unread` status store (design.md §2.2.7), for
+    /// `liveness::LivenessRuntime` (Task 3.2) to apply its own `MarkStale`
+    /// action directly — the one status transition this manager itself
+    /// never produces, since `Stale`'s only producer is liveness (see
+    /// `unread::status`'s own doc comment). The returned `Arc` is the same
+    /// lock every method below already shares.
+    pub fn status_store(&self) -> Arc<SyncMutex<StatusStore>> {
+        self.status_store.clone()
     }
 
     /// Runs `f` against the `unread` status store, recovering from a
