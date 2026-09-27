@@ -10,7 +10,7 @@
 //! [`LivenessMachine::touch`] deterministic and unit-testable below
 //! without any real waiting.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::time::Duration;
 
 use crate::config::ServiceId;
@@ -156,9 +156,12 @@ pub struct LivenessMachine {
     /// `touch` fails — see [`super::runtime::LivenessRuntime::
     /// record_report`], which calls `mark_reported` unconditionally,
     /// before attempting that clock-backed `touch`). Cleared wherever a
-    /// service stops being tracked ([`Self::remove`], and `tick`'s own
-    /// reconciliation against `statuses`), so presence never outlives the
-    /// service it describes.
+    /// service is actually removed from config ([`Self::remove`], and
+    /// [`Self::reconcile_reported`] — deliberately *not* `tick`'s own
+    /// `statuses`-driven reconciliation of [`Self::services`], since a
+    /// service's `statuses` entry can be transiently absent or stale for
+    /// reasons that have nothing to do with it still being configured),
+    /// so presence never outlives the service it describes.
     reported: BTreeSet<ServiceId>,
 }
 
@@ -177,8 +180,24 @@ impl LivenessMachine {
     /// particular, does not seed a [`ServiceLiveness`] entry — `tick`'s own
     /// auto-registration and [`Self::touch`] remain the only sources of
     /// that).
+    ///
+    /// Also clears any existing [`Self::last_real_report_ms`] for `id`
+    /// (leaving [`ServiceLiveness::last_report_ms`], the staleness
+    /// baseline, untouched — only `touch` may move that). This new report
+    /// has not landed a timestamp yet — [`super::runtime::LivenessRuntime::
+    /// record_report`] calls `mark_reported` before it even attempts the
+    /// clock-backed `touch` that would set one — so the *previous*
+    /// report's timestamp must not keep sitting there in the meantime: it
+    /// would make `get_diagnostics`'s `lastReportAgeMs` report a stale,
+    /// misleadingly "fresh-looking but wrong" age for a report that in
+    /// fact just landed, instead of the correct `null` ("reported, age
+    /// unavailable") if the clock read that was supposed to replace it
+    /// then fails.
     pub fn mark_reported(&mut self, id: &ServiceId) {
         self.reported.insert(id.clone());
+        if let Some(liveness) = self.services.get_mut(id) {
+            liveness.last_real_report_ms = None;
+        }
     }
 
     /// Whether `id` has ever sent a validated report (task 3.3's
@@ -243,6 +262,27 @@ impl LivenessMachine {
         self.services.get(id).and_then(|l| l.last_real_report_ms)
     }
 
+    /// Reconciles [`Self::has_reported`]'s presence set against
+    /// `configured_ids` (the ids currently listed in config —
+    /// `ServiceManager::snapshot`'s own `services`, not `statuses`):
+    /// presence is cleared only for a service no longer configured at all.
+    ///
+    /// Deliberately *not* reconciled against `statuses` the way [`Self::
+    /// tick`] reconciles its own tracked-services map: `statuses` can be
+    /// transiently absent or stale for a service that is still very much
+    /// configured (e.g. a snapshot captured before its first webview
+    /// status write, or one captured just ahead of a concurrent
+    /// `record_report`'s [`Self::mark_reported`] call) — reconciling
+    /// against it here would erase a just-recorded report's presence for
+    /// no reason connected to config at all.
+    ///
+    /// [`super::runtime::LivenessRuntime::tick_once`] is the only
+    /// production caller, run under the same machine lock as [`Self::
+    /// tick`] so this can never race a concurrent `mark_reported`.
+    pub fn reconcile_reported(&mut self, configured_ids: &HashSet<ServiceId>) {
+        self.reported.retain(|id| configured_ids.contains(id));
+    }
+
     /// Evaluates every service named in `statuses` at `now_ms` and returns
     /// the actions the caller should apply, in service-id order
     /// (deterministic, for tests and for stable logging).
@@ -252,18 +292,16 @@ impl LivenessMachine {
     /// baseline (design.md's own sanctioned alternative to a precise
     /// creation hook — see this module's doc), and a previously tracked
     /// service absent from `statuses` (removed, e.g. `StatusStore::remove`
-    /// after a successful `host.destroy`) is dropped.
+    /// after a successful `host.destroy`) is dropped. Does *not* touch
+    /// [`Self::has_reported`]'s presence set — that is
+    /// [`Self::reconcile_reported`]'s own job, against config rather than
+    /// `statuses` (see that method's doc for why).
     pub fn tick(
         &mut self,
         now_ms: u64,
         statuses: &std::collections::HashMap<ServiceId, ServiceStatus>,
     ) -> Vec<Action> {
         self.services.retain(|id, _| statuses.contains_key(id));
-        // Same reconciliation as `services` above, for the same reason
-        // (`Self::remove`'s own doc): a service no longer configured must
-        // not keep a stale "has reported" flag if it is later re-added
-        // under the same id.
-        self.reported.retain(|id| statuses.contains_key(id));
         for id in statuses.keys() {
             self.services
                 .entry(id.clone())
@@ -811,14 +849,20 @@ mod tests {
     }
 
     #[test]
-    fn tick_clears_has_reported_for_a_service_no_longer_in_statuses() {
+    fn tick_does_not_clear_has_reported_even_when_the_service_leaves_statuses() {
+        // `tick`'s own `statuses`-driven reconciliation must leave presence
+        // alone (review finding 3): `statuses` can be transiently absent
+        // for a service that is still configured, and clearing presence
+        // from it would erase a just-recorded report for no reason
+        // connected to config. Only `reconcile_reported` (against config)
+        // may clear it.
         let mut machine = LivenessMachine::new();
         machine.mark_reported(&id("gmail"));
         assert!(machine.has_reported(&id("gmail")));
 
         let empty = HashMap::new();
         machine.tick(BASE, &empty);
-        assert!(!machine.has_reported(&id("gmail")));
+        assert!(machine.has_reported(&id("gmail")));
     }
 
     #[test]
@@ -828,5 +872,90 @@ mod tests {
         let s = statuses(&[("gmail", ServiceStatus::Loading)]);
         machine.tick(BASE, &s);
         assert!(machine.has_reported(&id("gmail")));
+    }
+
+    // --- reconcile_reported against configured ids (review finding 3) ----
+
+    #[test]
+    fn reconcile_reported_clears_presence_for_a_service_no_longer_configured() {
+        let mut machine = LivenessMachine::new();
+        machine.mark_reported(&id("gmail"));
+        assert!(machine.has_reported(&id("gmail")));
+
+        machine.reconcile_reported(&HashSet::new());
+        assert!(!machine.has_reported(&id("gmail")));
+    }
+
+    #[test]
+    fn reconcile_reported_keeps_presence_for_a_service_still_configured() {
+        let mut machine = LivenessMachine::new();
+        machine.mark_reported(&id("gmail"));
+
+        let configured = HashSet::from([id("gmail")]);
+        machine.reconcile_reported(&configured);
+        assert!(machine.has_reported(&id("gmail")));
+    }
+
+    #[test]
+    fn reconcile_reported_keeps_presence_even_without_a_statuses_entry() {
+        // The exact scenario finding 3 calls out: a service that just
+        // called `record_report` (so it is `mark_reported`) but whose
+        // `statuses` entry is stale/absent this cycle must not lose
+        // presence, as long as it is still configured.
+        let mut machine = LivenessMachine::new();
+        machine.mark_reported(&id("gmail"));
+
+        let configured = HashSet::from([id("gmail")]);
+        machine.reconcile_reported(&configured);
+        assert!(machine.has_reported(&id("gmail")));
+
+        // Even a `tick` with an empty `statuses` map right after must not
+        // undo that.
+        machine.tick(BASE, &HashMap::new());
+        assert!(machine.has_reported(&id("gmail")));
+    }
+
+    // --- mark_reported clears a stale timestamp (review finding 2) -------
+
+    #[test]
+    fn mark_reported_clears_a_stale_last_real_report_ms() {
+        let mut machine = LivenessMachine::new();
+        machine.touch(&id("gmail"), 1_000); // an earlier report lands
+        assert_eq!(machine.last_real_report_ms(&id("gmail")), Some(1_000));
+
+        // A new report's presence is marked, but its own `touch` never
+        // runs (e.g. the clock failed): the OLD timestamp must not linger
+        // and misreport a stale age as if it were still current.
+        machine.mark_reported(&id("gmail"));
+        assert_eq!(machine.last_real_report_ms(&id("gmail")), None);
+        assert!(machine.has_reported(&id("gmail")));
+    }
+
+    #[test]
+    fn mark_reported_does_not_reset_the_staleness_baseline() {
+        // Only `touch` may move `ServiceLiveness::last_report_ms` (the
+        // staleness baseline) — `mark_reported` alone (its own `touch`
+        // never landing) must leave it exactly where the last successful
+        // `touch` put it.
+        let mut machine = LivenessMachine::new();
+        machine.touch(&id("gmail"), BASE);
+        machine.mark_reported(&id("gmail"));
+
+        let s = statuses(&[("gmail", ServiceStatus::Loading)]);
+        let actions = machine.tick(BASE + STALE_THRESHOLD_MS + 1, &s);
+        assert_eq!(actions.len(), 2); // still stale, measured from the original touch
+    }
+
+    #[test]
+    fn mark_reported_followed_by_a_successful_touch_sets_the_fresh_timestamp() {
+        // The normal path: `mark_reported` clearing the timestamp first
+        // does not linger once `touch` actually lands.
+        let mut machine = LivenessMachine::new();
+        machine.touch(&id("gmail"), 1_000);
+
+        machine.mark_reported(&id("gmail"));
+        machine.touch(&id("gmail"), 2_000);
+
+        assert_eq!(machine.last_real_report_ms(&id("gmail")), Some(2_000));
     }
 }

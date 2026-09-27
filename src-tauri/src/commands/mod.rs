@@ -264,10 +264,16 @@ pub async fn refresh_icon(
 /// `SystemTime::now()` directly — and a clock failure produces `None`
 /// (`build_diagnostics` then reports every age as `null`, never a
 /// fabricated value: project rule, no fallback defaults). `hasReported`,
-/// by contrast, comes from `LivenessRuntime::has_reported` — a plain
-/// presence flag set unconditionally by `record_report`, independent of
-/// this clock — so it stays `true` even for a service whose report
-/// timestamp is unavailable because a clock read failed.
+/// by contrast, comes from `LivenessRuntime::report_snapshot`'s presence
+/// flag — set unconditionally by `record_report`, independent of this
+/// clock — so it stays `true` even for a service whose report timestamp is
+/// unavailable because a clock read failed.
+///
+/// `report_snapshot` reads presence and timestamp for every service
+/// together, under one machine lock (task 3.3 review, finding 1), rather
+/// than this command calling two separate locked accessors — which could
+/// otherwise observe a report landing in between and desync the two
+/// fields for the same row.
 #[tauri::command]
 pub async fn get_diagnostics(
     app: AppHandle,
@@ -279,27 +285,27 @@ pub async fn get_diagnostics(
     let now_ms = liveness
         .as_deref()
         .and_then(|liveness| liveness.now_ms().ok());
-    let reported: HashSet<ServiceId> = match liveness.as_deref() {
-        Some(liveness) => snapshot
-            .services
-            .iter()
-            .filter(|service| liveness.has_reported(&service.id))
-            .map(|service| service.id.clone())
-            .collect(),
-        None => HashSet::new(),
-    };
-    let last_report_ms: HashMap<ServiceId, u64> = match liveness.as_deref() {
-        Some(liveness) => snapshot
-            .services
-            .iter()
-            .filter_map(|service| {
-                liveness
-                    .last_real_report_ms(&service.id)
-                    .map(|ms| (service.id.clone(), ms))
-            })
-            .collect(),
-        None => HashMap::new(),
-    };
+    let report_snapshot = liveness
+        .as_deref()
+        .map(|liveness| liveness.report_snapshot(snapshot.services.iter().map(|s| &s.id)));
+    let (reported, last_report_ms): (HashSet<ServiceId>, HashMap<ServiceId, u64>) =
+        match &report_snapshot {
+            Some(statuses) => {
+                let reported = statuses
+                    .iter()
+                    .filter(|(_, status)| status.has_reported)
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                let last_report_ms = statuses
+                    .iter()
+                    .filter_map(|(id, status)| {
+                        status.last_real_report_ms.map(|ms| (id.clone(), ms))
+                    })
+                    .collect();
+                (reported, last_report_ms)
+            }
+            None => (HashSet::new(), HashMap::new()),
+        };
 
     Ok(build_diagnostics(
         &snapshot.services,
