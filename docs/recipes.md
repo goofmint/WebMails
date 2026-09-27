@@ -151,17 +151,25 @@ by reading the diff.
 - **Same-origin only, via `ctx.fetch`.** All network access goes through
   `ctx.fetch` (a `SameOriginFetch`, built by `createSameOriginFetch` in
   `agent/strategies/fetch.ts`). This is runtime-enforced, not just a review
-  rule: it throws (rejects the returned promise) before calling the
-  underlying `fetch` when:
-  - the path doesn't resolve to a URL at all;
-  - the resolved URL's origin (scheme + host + port) differs from
-    `serviceUrl`'s, including protocol-relative URLs and non-`http(s)`
-    schemes such as `data:`/`blob:`/`javascript:`;
-  - the final response URL (after redirects) is on a different origin — e.g.
-    a cross-origin login redirect;
+  rule, and the checks happen at two different points:
+
+  **Before the request** (checks on the request URL and `init`; the
+  returned promise rejects and the underlying `fetch` is never called):
   - `init.method` is present and isn't `GET` (case-insensitive; an omitted
     method defaults to `GET` and is allowed);
-  - `init.body` is present.
+  - `init.body` is present;
+  - the path doesn't resolve to a URL at all;
+  - the resolved request URL's origin (scheme + host + port) differs from
+    `serviceUrl`'s, including protocol-relative URLs and non-`http(s)`
+    schemes such as `data:`/`blob:`/`javascript:`.
+
+  **After the request** (check on the response): the final `response.url`
+  (after redirects) is on a different origin — e.g. a cross-origin login
+  redirect. This check runs only once the underlying `fetch` has completed:
+  the browser has already followed the redirect and made the cross-origin
+  request by then, and `ctx.fetch` rejects instead of handing the response
+  to the recipe. So this check keeps a cross-origin response out of the
+  recipe; it does not prevent the redirected request itself.
 
   `init.mode` and `init.credentials` are always forced to `"same-origin"`;
   other `init` fields pass through unchanged. In short: **`ctx.fetch` is
@@ -540,9 +548,24 @@ reflect the _current_ state, as `gmail.test.ts`'s
 
 Say you're adding a fictional service, `mail.example-mail.test`, whose title
 looks like `"(3) Inbox — ExampleMail"` when signed in with unread mail, and
-has no parenthesized count when there's none or when signed out (same
-ambiguity as `generic`, so this recipe returns `0`, not `null`, on no match —
-see [the count rule](#the-count-null-vs-count-0-rule)).
+has no parenthesized count when there's none or when signed out — the same
+ambiguity `generic` has. Unlike `generic`, a specific recipe knows its
+service's pages, so this one uses an **independent**, read-only signal
+instead of treating "no count in the title" as `0` (see
+[the count rule](#the-count-null-vs-count-0-rule)). Suppose ExampleMail's
+signed-in mailbox always renders a `<main data-view="mailbox">` element and
+its sign-in page never does:
+
+- title has a count → that count;
+- no count, and the mailbox element is present → `0` (signed in, nothing
+  unread);
+- no count, and no mailbox element → `null` (signed out, or a page the
+  recipe doesn't recognize).
+
+The marker here is invented for the example. For a real service, use a
+signal you have actually observed on both the signed-in and signed-out
+pages; if there isn't one, fall back to `generic`'s behavior (return `0`)
+rather than guessing.
 
 1. **Write the recipe module**, `agent/recipes/examplemail.ts`:
 
@@ -552,6 +575,8 @@ see [the count rule](#the-count-null-vs-count-0-rule)).
 
    const HOST = "mail.example-mail.test";
    const TITLE_PATTERN = /^\((\d+)\)/;
+   // Rendered only on the signed-in mailbox view (see above).
+   const MAILBOX_SELECTOR = 'main[data-view="mailbox"]';
 
    export const examplemail: Recipe = {
      id: "examplemail",
@@ -563,12 +588,24 @@ see [the count rule](#the-count-null-vs-count-0-rule)).
      },
 
      describe(): RecipeDescription {
-       return { strategy: "title", reads: `Document title matches ${TITLE_PATTERN.toString()}` };
+       return {
+         strategy: "title",
+         reads: `Document title matches ${TITLE_PATTERN.toString()}; signed-in check: ${MAILBOX_SELECTOR}`,
+       };
      },
 
      read(ctx: RecipeContext): Promise<UnreadResult> {
        const count = titleCount(ctx.document, TITLE_PATTERN);
-       return Promise.resolve({ count: count ?? 0, messages: [] });
+       if (count !== null) {
+         return Promise.resolve({ count, messages: [] });
+       }
+       // No count in the title: only report 0 when the page is known to be
+       // the signed-in mailbox; otherwise the state is ambiguous → null.
+       // `querySelector` only reads the DOM.
+       if (ctx.document.querySelector(MAILBOX_SELECTOR) !== null) {
+         return Promise.resolve({ count: 0, messages: [] });
+       }
+       return Promise.resolve({ count: null });
      },
 
      watch(ctx: RecipeContext, onChange: () => void): () => void {
@@ -584,7 +621,9 @@ see [the count rule](#the-count-null-vs-count-0-rule)).
 3. **Add a test file**, `agent/recipes/examplemail.test.ts`, modeled on
    `generic.test.ts` since this is a pure title-strategy recipe: `matches()`
    against the real host and at least one look-alike host; `describe()`;
-   `read()` for a title with a count, a title with none (→ `0`); `watch()`
+   `read()` for a title with a count, a title with none plus the mailbox
+   element (→ `0`), and a title with none and no mailbox element, e.g. a
+   sign-in page (→ `null`); `watch()`
    noticing a replaced `<title>` element and stopping after unsubscribe.
 
 4. **Run `pnpm test agent/recipes/examplemail`**, then the full suite
