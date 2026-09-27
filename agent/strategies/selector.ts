@@ -88,14 +88,20 @@ function matchesOrContainsMatch(node: Node, selector: string): boolean {
 }
 
 // True for a `childList` mutation that added or removed a node matching
-// `selector` (or containing a match), or whose target itself matches (or
-// contains a match). Deliberately does not consult ancestors via
-// `closest`: an ancestor's descendants changing doesn't by itself tell us
-// whether an element matching `selector` was added or removed anywhere in
-// the tree, only the changed nodes and target can.
+// `selector` (or containing a match), or whose target is, contains, or is
+// inside an element matching `selector`. The ancestor check covers text
+// replaced inside a matching element (e.g. `b.textContent = "2"` inside
+// `span.count`), which is a childList mutation on the descendant; changes
+// in a sibling subtree still don't match.
 function isChildListRelevant(mutation: MutationRecord, selector: string): boolean {
   if (matchesOrContainsMatch(mutation.target, selector)) {
     return true;
+  }
+  if (mutation.target.nodeType === Node.ELEMENT_NODE) {
+    const target = mutation.target as Element;
+    if (target.closest(selector) !== null) {
+      return true;
+    }
   }
   for (const node of mutation.addedNodes) {
     if (matchesOrContainsMatch(node, selector)) {

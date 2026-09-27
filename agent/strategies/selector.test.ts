@@ -211,8 +211,20 @@ describe("watchSelector", () => {
     unwatch();
   });
 
-  it("does not call cb for a childList change inside a matching ancestor when no changed node matches", async () => {
-    document.body.innerHTML = '<div class="count"><ul><li>a</li></ul></div>';
+  it("calls cb once when text inside a matching element is replaced", async () => {
+    document.body.innerHTML = '<span class="count"><b>1</b></span>';
+    const cb = vi.fn();
+    const unwatch = watchSelector(document, ".count", cb);
+
+    document.querySelector("b")!.textContent = "2";
+    await flushMicrotasks();
+
+    expect(cb).toHaveBeenCalledTimes(1);
+    unwatch();
+  });
+
+  it("does not call cb for a childList change in a sibling subtree", async () => {
+    document.body.innerHTML = '<span class="count">1</span><ul><li>a</li></ul>';
     const cb = vi.fn();
     const unwatch = watchSelector(document, ".count", cb);
 
