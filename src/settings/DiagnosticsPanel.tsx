@@ -8,7 +8,7 @@
  * `ipc` prop) since it needs no CRUD dependency injection of its own.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getDiagnostics } from "../ipc/commands";
 import { onServicesChanged } from "../ipc/events";
 import { toCommandError } from "../ipc/errors";
@@ -68,12 +68,28 @@ function DiagnosticsRow({ row }: { readonly row: ServiceDiagnostic }) {
 export function DiagnosticsPanel() {
   const [state, setState] = useState<DiagnosticsState>({ status: "loading" });
 
+  // Each call gets the next increasing id; a result is only applied when
+  // its id is still the latest one issued (an older, slower request that
+  // resolves after a newer one is dropped) and the component is still
+  // mounted (`mountedRef`, set in the effect below — StrictMode mounts,
+  // cleans up and remounts once in dev, so this can't just be a `let`
+  // captured by the effect closure).
+  const latestRequestIdRef = useRef(0);
+  const mountedRef = useRef(false);
+
   const refresh = useCallback((): Promise<void> => {
+    const requestId = ++latestRequestIdRef.current;
     return getDiagnostics().then(
       (diagnostics) => {
+        if (requestId !== latestRequestIdRef.current || !mountedRef.current) {
+          return;
+        }
         setState({ status: "ready", diagnostics });
       },
       (caughtError: unknown) => {
+        if (requestId !== latestRequestIdRef.current || !mountedRef.current) {
+          return;
+        }
         setState({ status: "error", error: toCommandError(caughtError) });
       },
     );
@@ -82,6 +98,7 @@ export function DiagnosticsPanel() {
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
+    mountedRef.current = true;
 
     void refresh();
 
@@ -102,6 +119,7 @@ export function DiagnosticsPanel() {
 
     return () => {
       cancelled = true;
+      mountedRef.current = false;
       if (unlisten !== null) {
         unlisten();
       }

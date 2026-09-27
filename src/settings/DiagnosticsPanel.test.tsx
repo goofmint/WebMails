@@ -116,9 +116,19 @@ describe("DiagnosticsPanel", () => {
 
     // "iCloud" has never reported and never gone stale.
     const row = screen.getByText("iCloud").closest("tr");
-    expect(row).not.toBeNull();
-    expect(row?.textContent).toContain("Never reported");
-    expect(row?.textContent).toContain("Never");
+    if (row === null) {
+      throw new Error("expected the iCloud row to exist");
+    }
+    const cells = Array.from(row.querySelectorAll("td"));
+    expect(cells).toHaveLength(5);
+    const [, , lastReportCell, , lastStaleCell] = cells;
+    if (lastReportCell === undefined || lastStaleCell === undefined) {
+      throw new Error("expected 5 cells in the iCloud row");
+    }
+    expect(lastReportCell.textContent).toBe("Never reported");
+    // Index 4 is the last-stale cell; it must be exactly "Never" (not merely
+    // containing it) when `lastStaleAt` is null.
+    expect(lastStaleCell.textContent).toBe("Never");
   });
 
   it("refetches when the refresh button is clicked", async () => {
@@ -139,6 +149,93 @@ describe("DiagnosticsPanel", () => {
       ([cmd]) => cmd === "get_diagnostics",
     ).length;
     expect(callsAfterRefresh).toBeGreaterThan(callsAfterMount);
+  });
+
+  it("keeps the newer result when two overlapping refreshes resolve out of order", async () => {
+    // Mount issues the first `get_diagnostics` call; clicking Refresh while
+    // it is still pending issues a second, newer one. Resolving the newer
+    // (second) request before the older (first) one must still leave the
+    // newer result on screen — the stale, out-of-order response from the
+    // first request must be ignored even though it settles last.
+    type Deferred = {
+      readonly promise: Promise<Diagnostics>;
+      readonly resolve: (value: Diagnostics) => void;
+    };
+    function createDeferred(): Deferred {
+      let resolve!: (value: Diagnostics) => void;
+      const promise = new Promise<Diagnostics>((res) => {
+        resolve = res;
+      });
+      return { promise, resolve };
+    }
+
+    const deferreds: Deferred[] = [];
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "get_diagnostics") {
+        const deferred = createDeferred();
+        deferreds.push(deferred);
+        return deferred.promise;
+      }
+      if (cmd === "plugin:event|listen") {
+        return Promise.resolve(1);
+      }
+      if (cmd === "plugin:event|unlisten") {
+        return Promise.resolve(undefined);
+      }
+      return Promise.reject(new Error(`unexpected invoke: ${cmd}`));
+    });
+
+    const OLDER_RESULT: Diagnostics = {
+      services: [
+        {
+          serviceId: "gmail",
+          name: "Older result",
+          status: { kind: "ok", count: 1 },
+          lastReportAgeMs: 1_000,
+          staleCount: 0,
+          lastStaleAt: null,
+        },
+      ],
+    };
+    const NEWER_RESULT: Diagnostics = {
+      services: [
+        {
+          serviceId: "gmail",
+          name: "Newer result",
+          status: { kind: "ok", count: 2 },
+          lastReportAgeMs: 2_000,
+          staleCount: 0,
+          lastStaleAt: null,
+        },
+      ],
+    };
+
+    render(<DiagnosticsPanel />);
+
+    // Wait for the mount-triggered (first, older) request to be issued.
+    await vi.waitFor(() => expect(deferreds).toHaveLength(1));
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+
+    // Wait for the click-triggered (second, newer) request to be issued.
+    await vi.waitFor(() => expect(deferreds).toHaveLength(2));
+
+    const [olderRequest, newerRequest] = deferreds;
+    if (olderRequest === undefined || newerRequest === undefined) {
+      throw new Error("expected two get_diagnostics requests to have been issued");
+    }
+
+    // Resolve out of order: the newer request settles first.
+    newerRequest.resolve(NEWER_RESULT);
+    await screen.findByText("Newer result");
+
+    // The older request settles after — it must not overwrite the newer
+    // result that's already on screen.
+    olderRequest.resolve(OLDER_RESULT);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(screen.getByText("Newer result")).toBeInTheDocument();
+    expect(screen.queryByText("Older result")).not.toBeInTheDocument();
   });
 
   it("shows the command error when get_diagnostics fails", async () => {
