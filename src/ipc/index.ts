@@ -14,6 +14,7 @@ export type {
   IconSource,
   ConfigErrorInfo,
   ServiceStatus,
+  CachedIconInfo,
   Snapshot,
   ServicePatchInput,
   CommandError,
@@ -32,6 +33,7 @@ export interface ShellIpc {
   onStatusChanged(
     callback: (payload: { readonly serviceId: string; readonly status: ServiceStatus }) => void,
   ): Promise<UnlistenFn>;
+  onServiceIconChanged(callback: (payload: { readonly id: string }) => void): Promise<UnlistenFn>;
 }
 
 /** The real, `invoke`/`listen`-backed implementation, used by `App.tsx`. */
@@ -43,6 +45,7 @@ export const shellIpc: ShellIpc = {
   onServicesChanged: events.onServicesChanged,
   onSelectService: events.onSelectService,
   onStatusChanged: events.onStatusChanged,
+  onServiceIconChanged: events.onServiceIconChanged,
 };
 
 /**

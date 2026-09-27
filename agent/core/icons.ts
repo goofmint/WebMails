@@ -53,10 +53,15 @@ function parseIpv4(hostname: string): readonly [number, number, number, number] 
   return [a, b, c, d];
 }
 
-// Matches src-tauri/src/agent_bridge/validate.rs's is_disallowed_ipv4, plus
-// the unspecified address (0.0.0.0), which the receiver does not check but
-// which must never be sent as a candidate either.
+// Matches src-tauri/src/net_guard.rs's is_disallowed_ipv4 exactly — that
+// module is what src-tauri/src/agent_bridge/validate.rs's `is_disallowed_host`
+// call actually checks a report's `iconCandidates` against, and it rejects
+// the *entire* report if even one candidate fails, so this must never be
+// looser than that check.
 function isDisallowedIpv4([a, b, c, d]: readonly [number, number, number, number]): boolean {
+  if (a === 0) {
+    return true; // 0.0.0.0/8, "this network" (covers the unspecified address too)
+  }
   if (a === 127) {
     return true; // 127.0.0.0/8, loopback
   }
@@ -69,11 +74,17 @@ function isDisallowedIpv4([a, b, c, d]: readonly [number, number, number, number
   if (a === 192 && b === 168) {
     return true; // 192.168.0.0/16, private
   }
+  if (a === 100 && b >= 64 && b <= 127) {
+    return true; // 100.64.0.0/10, shared/carrier-grade NAT
+  }
   if (a === 169 && b === 254) {
     return true; // 169.254.0.0/16, link-local
   }
-  if (a === 0 && b === 0 && c === 0 && d === 0) {
-    return true; // 0.0.0.0, unspecified
+  if (a >= 224 && a <= 239) {
+    return true; // 224.0.0.0/4, multicast
+  }
+  if (a === 255 && b === 255 && c === 255 && d === 255) {
+    return true; // 255.255.255.255, broadcast
   }
   return false;
 }
@@ -106,12 +117,20 @@ function parseIpv6Segments(hostname: string): Ipv6Segments | null {
   return [s0 ?? 0, s1 ?? 0, s2 ?? 0, s3 ?? 0, s4 ?? 0, s5 ?? 0, s6 ?? 0, s7 ?? 0];
 }
 
-// Matches src-tauri/src/agent_bridge/validate.rs's is_disallowed_ipv6:
-// loopback (::1), IPv4-mapped (::ffff:a.b.c.d, re-checked as IPv4),
-// unicast link-local (fe80::/10) and unique local (fc00::/7).
+// Matches src-tauri/src/net_guard.rs's is_disallowed_ipv6 exactly (see
+// isDisallowedIpv4's comment on why this must never be looser than that
+// module): unspecified (::), loopback (::1), IPv4-mapped
+// (::ffff:a.b.c.d, re-checked as IPv4), unicast link-local (fe80::/10),
+// unique local (fc00::/7) and multicast (ff00::/8).
 function isDisallowedIpv6(segments: Ipv6Segments): boolean {
+  if (segments.every((segment) => segment === 0)) {
+    return true; // ::, unspecified
+  }
   if (segments.slice(0, 7).every((segment) => segment === 0) && segments[7] === 1) {
     return true;
+  }
+  if ((segments[0] & 0xff00) === 0xff00) {
+    return true; // ff00::/8, multicast
   }
   if (segments.slice(0, 5).every((segment) => segment === 0) && segments[5] === 0xffff) {
     const mapped: [number, number, number, number] = [
@@ -131,13 +150,14 @@ function isDisallowedIpv6(segments: Ipv6Segments): boolean {
   return false;
 }
 
-// Whether `url`'s host is loopback, private or link-local and must never be
-// sent as an icon candidate — the receiver
-// (src-tauri/src/agent_bridge/validate.rs's `is_disallowed_host`) rejects
-// the entire report if any candidate fails this check, so the agent must
-// filter these out itself. Also rejects the `localhost` name, which the
-// receiver's DNS-free check cannot catch since it only inspects literal IP
-// hosts.
+// Whether `url`'s host is loopback, private, link-local, unspecified,
+// broadcast or multicast and must never be sent as an icon candidate — the
+// receiver (src-tauri/src/agent_bridge/validate.rs's `is_disallowed_host`,
+// which defers to src-tauri/src/net_guard.rs) rejects the entire report if
+// any candidate fails this check, so the agent must filter these out
+// itself, using the exact same address ranges. Also rejects the
+// `localhost` name, which the receiver's DNS-free check cannot catch since
+// it only inspects literal IP hosts.
 export function isDisallowedIconHost(url: URL): boolean {
   const hostname = url.hostname;
   if (hostname === "localhost") {

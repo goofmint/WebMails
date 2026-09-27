@@ -13,6 +13,8 @@
     "allow-update-settings",
     "allow-open-settings",
     "allow-reload-service",
+    "allow-set-icon-override",
+    "allow-refresh-icon",
     "core:event:default",
     "core:window:allow-set-focus"
   ]

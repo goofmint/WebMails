@@ -12,6 +12,7 @@ function renderConfirm(profile: string, onClose: () => void = () => {}) {
     statuses: {},
     sidebarWidth: 64,
     activeServiceId: null,
+    icons: {},
   });
   render(<DeleteConfirm ipc={ipc} service={target} onClose={onClose} />);
   return { ipc, target };

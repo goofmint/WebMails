@@ -4,7 +4,9 @@ mod commands;
 pub mod config;
 pub mod error;
 pub mod host;
+pub mod icons;
 pub mod liveness;
+mod net_guard;
 mod notify;
 pub mod paths;
 mod platform;
@@ -52,6 +54,8 @@ pub fn run() {
             commands::update_settings,
             commands::open_settings,
             commands::reload_service,
+            commands::set_icon_override,
+            commands::refresh_icon,
             agent_bridge::report_unread,
         ])
         .setup(|app| {
@@ -152,6 +156,12 @@ pub fn run() {
             let data_dir = paths::data_dir(app)?;
             let state_path = paths::state_file(&data_dir);
             let manager_profile_backend = PlatformProfileBackend::new(app.handle())?;
+            // Resolves and caches service icons (design.md §2.2.10; Task
+            // 1.14) — a real, network-backed `IconService` regardless of
+            // whether config/state loaded, so `ServiceManager::failed`'s
+            // arm below (which never starts any service) still has one to
+            // hold, matching every other manager-held collaborator.
+            let icons = Arc::new(icons::IconService::new(data_dir.clone())?);
 
             // On either failure, no services are started, the file is
             // never repaired or overwritten, and the error is kept on the
@@ -182,6 +192,7 @@ pub fn run() {
                             config_path,
                             loaded_config,
                             state,
+                            icons.clone(),
                         ))
                     }
                     Err(err) => {
@@ -197,6 +208,7 @@ pub fn run() {
                             app.handle().clone(),
                             config_path,
                             state_error,
+                            icons.clone(),
                         ))
                     }
                 },
@@ -208,6 +220,7 @@ pub fn run() {
                         app.handle().clone(),
                         config_path,
                         err,
+                        icons.clone(),
                     ))
                 }
             };

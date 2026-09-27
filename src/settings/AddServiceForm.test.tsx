@@ -11,6 +11,7 @@ function renderForm(services = [service()]) {
     statuses: {},
     sidebarWidth: 64,
     activeServiceId: null,
+    icons: {},
   });
   render(<AddServiceForm ipc={ipc} services={services} />);
   return ipc;

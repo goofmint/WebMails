@@ -50,3 +50,18 @@ export async function onStatusChanged(
     },
   );
 }
+
+/**
+ * `service-icon-changed` — wire payload `{ serviceId }` (Task 1.14;
+ * design.md §2.2.10), exposed to the caller as `{ id }` (matching
+ * `onSelectService`'s own shape). Emitted after icon resolution writes a
+ * new cached PNG for a service; the store's job is to refetch
+ * `get_snapshot` on this event, same as `onServicesChanged`.
+ */
+export async function onServiceIconChanged(
+  callback: (payload: { readonly id: string }) => void,
+): Promise<UnlistenFn> {
+  return listen<{ readonly serviceId: string }>("service-icon-changed", (event) => {
+    callback({ id: event.payload.serviceId });
+  });
+}

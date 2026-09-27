@@ -53,6 +53,7 @@ use crate::config::{
 };
 use crate::error::{AppError, AppResult};
 use crate::host::{PageLoadHandler, ServiceWebviewSpec, WebviewHost};
+use crate::icons::{self, CachedIcon, IconOverride, IconService};
 use crate::platform::app_nap::AppNapGuard;
 use crate::profile::{self, PlatformProfileBackend, ProfileBackend, ProfileKey};
 use crate::state::StateStore;
@@ -77,8 +78,17 @@ const SELECT_SERVICE_EVENT: &str = "select-service";
 /// (design.md §2.2.7).
 const STATUS_CHANGED_EVENT: &str = "status-changed";
 
-/// The webview label every shell-only event (`select-service` and
-/// `status-changed` included) targets (design.md §2.2.4).
+/// The event emitted to the `shell` and `settings` webviews whenever icon
+/// resolution (design.md §2.2.10) writes a new cached PNG for a service —
+/// on a fresh `report_unread`'s candidates, `refresh_icon`, or
+/// `set_icon_override` — carrying `{ serviceId }`. Not emitted when
+/// resolution runs but fails to produce a cache (the shell simply keeps
+/// showing the generated letter icon in that case).
+const SERVICE_ICON_CHANGED_EVENT: &str = "service-icon-changed";
+
+/// The webview label every shell-only event (`select-service`,
+/// `status-changed` and `service-icon-changed` included) targets
+/// (design.md §2.2.4).
 const SHELL_LABEL: &str = "shell";
 
 /// The webview label the settings window runs under (design.md §2.2.12,
@@ -154,6 +164,7 @@ pub struct ServiceManager {
     profile_backend: PlatformProfileBackend,
     app_handle: AppHandle<Wry>,
     config_path: PathBuf,
+    icons: Arc<IconService>,
     inner: Mutex<ManagerState>,
     /// Holds the macOS App Nap assertion while at least one service is
     /// created (design.md §2.2.8, §2.2.11; Task 3.1). Every call site
@@ -183,12 +194,14 @@ impl ServiceManager {
         config_path: PathBuf,
         config: Config,
         state: Arc<StateStore>,
+        icons: Arc<IconService>,
     ) -> Self {
         ServiceManager {
             host,
             profile_backend,
             app_handle,
             config_path,
+            icons,
             inner: Mutex::new(ManagerState::Ready(Ready {
                 config,
                 state,
@@ -216,12 +229,14 @@ impl ServiceManager {
         app_handle: AppHandle<Wry>,
         config_path: PathBuf,
         error: ConfigError,
+        icons: Arc<IconService>,
     ) -> Self {
         ServiceManager {
             host,
             profile_backend,
             app_handle,
             config_path,
+            icons,
             inner: Mutex::new(ManagerState::Failed(error)),
             // No `Config` was loaded, so no service is ever created in
             // this state (module doc's "Editing ... is refused"): the
@@ -243,8 +258,39 @@ impl ServiceManager {
     /// Returns immediately; the caller (`lib.rs`'s `setup` hook) never
     /// blocks on this.
     pub fn start(manager: Arc<Self>) {
+        Self::spawn_missing_override_resolutions(manager.clone());
         tauri::async_runtime::spawn(async move {
             manager.run_startup().await;
+        });
+    }
+
+    /// At startup, resolves the icon for every configured service that has
+    /// a user override (`icon` is not `Favicon`) and no cached PNG yet
+    /// (design.md §2.2.10's "only when there is no cached PNG"): an agent
+    /// hasn't loaded a page yet to supply `iconCandidates`, so an override
+    /// is the only source available this early, but there is no need to
+    /// wait for a webview at all — unlike [`Self::run_startup`], this does
+    /// not touch webviews and does not stagger. Each service resolves
+    /// independently via [`Self::spawn_icon_resolve`], so one slow or
+    /// failing download never delays another.
+    fn spawn_missing_override_resolutions(manager: Arc<Self>) {
+        tauri::async_runtime::spawn(async move {
+            let services = {
+                let guard = manager.inner.lock().await;
+                match &*guard {
+                    ManagerState::Failed(_) => return,
+                    ManagerState::Ready(ready) => ready.config.services.clone(),
+                }
+            };
+            for service in services {
+                if matches!(service.icon, IconSource::Favicon) {
+                    continue;
+                }
+                if manager.icons.cached_icon(&service.id).is_some() {
+                    continue;
+                }
+                Self::spawn_icon_resolve(&manager, service.id.clone(), service.icon.clone());
+            }
         });
     }
 
@@ -815,16 +861,36 @@ impl ServiceManager {
     /// badge (design.md §2.2.13) already treats as the no-report-yet case.
     pub async fn snapshot(&self) -> ManagerSnapshot {
         let guard = self.inner.lock().await;
-        let (settings, services, config_error, active) = match &*guard {
-            ManagerState::Failed(config_error) => {
-                (None, Vec::new(), Some(config_error.clone()), None)
-            }
-            ManagerState::Ready(ready) => (
-                Some(ready.config.settings.clone()),
-                ready.config.services.clone(),
+        let (settings, services, config_error, active, icons) = match &*guard {
+            ManagerState::Failed(config_error) => (
                 None,
-                ready.active.clone(),
+                Vec::new(),
+                Some(config_error.clone()),
+                None,
+                BTreeMap::new(),
             ),
+            ManagerState::Ready(ready) => {
+                // `IconService::cached_icon` is a plain filesystem stat, not
+                // an `inner`-locking call, so reading it once per service
+                // here — while `guard` is still held — cannot deadlock.
+                let icons = ready
+                    .config
+                    .services
+                    .iter()
+                    .filter_map(|service| {
+                        self.icons
+                            .cached_icon(&service.id)
+                            .map(|cached| (service.id.clone(), cached))
+                    })
+                    .collect();
+                (
+                    Some(ready.config.settings.clone()),
+                    ready.config.services.clone(),
+                    None,
+                    ready.active.clone(),
+                    icons,
+                )
+            }
         };
         drop(guard);
 
@@ -836,6 +902,7 @@ impl ServiceManager {
             config_error,
             statuses,
             active,
+            icons,
         }
     }
 
@@ -873,6 +940,12 @@ impl ServiceManager {
 
         self.apply_edit_inner(ConfigEdit::RemoveService(id.clone()))
             .await?;
+
+        // Removes the cached PNG, any installed file override, and any
+        // remembered `iconCandidates` for the now-removed service
+        // (design.md §2.2.10) — a recreated service under the same id
+        // starts icon resolution fresh, never inheriting stale state.
+        self.icons.forget(id).await;
 
         if !delete_session_data {
             return Ok(());
@@ -982,6 +1055,112 @@ impl ServiceManager {
         })
     }
 
+    /// `id`'s currently configured `icon` (design.md §2.2.1). `None` if
+    /// `id` is not a configured service, or if the manager never loaded
+    /// its configuration — mirrors [`Self::service_url`]'s own contract.
+    pub async fn icon_source_for(&self, id: &ServiceId) -> Option<IconSource> {
+        let guard = self.inner.lock().await;
+        match &*guard {
+            ManagerState::Failed(_) => None,
+            ManagerState::Ready(ready) => ready
+                .config
+                .services
+                .iter()
+                .find(|s| s.id == *id)
+                .map(|s| s.icon.clone()),
+        }
+    }
+
+    /// Records `candidates` from a validated, non-empty `report_unread`
+    /// (design.md §2.2.6; `agent_bridge::report_unread`'s only consumer of
+    /// a report so far — see that command's own doc comment for why this
+    /// is a temporary, single-purpose path rather than the full `unread`
+    /// status store). Returns `id`'s current [`IconSource`] if resolution
+    /// should now run (no cached PNG yet, and `id` is not already
+    /// resolving) — the caller then spawns it via
+    /// [`Self::spawn_icon_resolve`], since only a caller holding an `Arc<Self>`
+    /// can. `None` either means resolution should not run yet, or `id` is
+    /// not (or no longer) a configured service.
+    pub async fn record_icon_candidates(
+        &self,
+        id: &ServiceId,
+        candidates: Vec<Url>,
+    ) -> Option<IconSource> {
+        let icon_source = self.icon_source_for(id).await?;
+        let should_resolve = self.icons.record_candidates(id.clone(), candidates).await;
+        should_resolve.then_some(icon_source)
+    }
+
+    /// Deletes `id`'s cached PNG (`refresh_icon`, design.md §2.2.12) — the
+    /// caller (the `refresh_icon` command) still has to spawn
+    /// [`Self::spawn_icon_resolve`] itself afterwards to actually
+    /// re-resolve.
+    pub fn clear_icon_cache(&self, id: &ServiceId) {
+        self.icons.clear_cache(id);
+    }
+
+    /// `set_icon_override` (design.md §2.2.12): builds the [`IconSource`]
+    /// to persist for `source` — installing a file override into
+    /// `{data_dir}/icons/<id>.src` via [`IconService::install_override_file`],
+    /// or validating a URL override exactly like an agent's
+    /// `iconCandidates` ([`icons::validate_override_url`]) — then applies
+    /// it as an ordinary [`ServicePatch`] (so it goes through the same
+    /// `config.toml` edit, reconciliation and `services-changed` emission
+    /// as any other service field). Returns the [`IconSource`] just
+    /// persisted, for the caller to resolve with
+    /// ([`Self::spawn_icon_resolve`]); the cache itself is not cleared
+    /// here — the caller does that (matching [`Self::clear_icon_cache`]'s
+    /// own "caller spawns resolution" contract).
+    pub async fn set_icon_override(
+        &self,
+        id: &ServiceId,
+        source: IconOverride,
+    ) -> AppResult<IconSource> {
+        let icon_source = match source {
+            IconOverride::Favicon => IconSource::Favicon,
+            IconOverride::File(source_path) => {
+                let relative =
+                    self.icons
+                        .install_override_file(id, &source_path)
+                        .map_err(|err| {
+                            AppError::Icon(format!("could not install icon override file: {err}"))
+                        })?;
+                IconSource::File(relative)
+            }
+            IconOverride::Url(url) => {
+                icons::validate_override_url(&url)?;
+                IconSource::Url(url)
+            }
+        };
+        self.update_service(
+            id,
+            ServicePatch {
+                icon: Some(icon_source.clone()),
+                ..ServicePatch::default()
+            },
+        )
+        .await?;
+        Ok(icon_source)
+    }
+
+    /// Spawns icon resolution for `id` in the background
+    /// ([`IconService::resolve`]), emitting [`SERVICE_ICON_CHANGED_EVENT`]
+    /// afterwards if — and only if — resolution actually wrote a new
+    /// cached PNG (design.md §2.2.10's "after it succeeds"). Takes
+    /// `manager: &Arc<Self>` (an explicit parameter, not a `self: &Arc<Self>`
+    /// receiver, which is not a stable Rust self type) so every caller that
+    /// already holds an `Arc<ServiceManager>` — every command here, via
+    /// `State<'_, Arc<ServiceManager>>::inner()` — can call it directly.
+    pub fn spawn_icon_resolve(manager: &Arc<Self>, id: ServiceId, override_source: IconSource) {
+        let manager = Arc::clone(manager);
+        tauri::async_runtime::spawn(async move {
+            let changed = manager.icons.resolve(id.clone(), override_source).await;
+            if changed {
+                manager.emit_service_icon_changed(&id);
+            }
+        });
+    }
+
     /// Emits `services-changed` — `{ services: [...] }`, `services` in
     /// sidebar order — to both the `shell` and `settings` webviews (Task
     /// 1.9; design.md §2.2.12). `emit_to` a label with no current webview
@@ -1004,7 +1183,7 @@ impl ServiceManager {
     /// only (Task 1.9; design.md §2.2.12): unlike `services-changed`, the
     /// settings window has no use for which service tab is active.
     fn emit_select_service(&self, id: &ServiceId) {
-        let payload = SelectServicePayload {
+        let payload = ServiceIdPayload {
             service_id: id.as_str(),
         };
         if let Err(err) = self
@@ -1095,6 +1274,24 @@ impl ServiceManager {
             emit_status_changed(&app_handle, changed);
         })
     }
+
+    /// Emits `service-icon-changed` — `{ serviceId }` — to both the
+    /// `shell` and `settings` webviews (design.md §2.2.10), same
+    /// multi-target pattern as [`Self::emit_services_changed`]: a label
+    /// with no current webview is not an error.
+    fn emit_service_icon_changed(&self, id: &ServiceId) {
+        let payload = ServiceIdPayload {
+            service_id: id.as_str(),
+        };
+        for label in [SHELL_LABEL, SETTINGS_LABEL] {
+            if let Err(err) = self
+                .app_handle
+                .emit_to(label, SERVICE_ICON_CHANGED_EVENT, &payload)
+            {
+                tracing::warn!("failed to emit {SERVICE_ICON_CHANGED_EVENT} to '{label}': {err}");
+            }
+        }
+    }
 }
 
 /// Calls [`emit_if_changed`] with a closure that emits [`STATUS_CHANGED_EVENT`]
@@ -1120,10 +1317,12 @@ struct ServicesChangedPayload<'a> {
     services: &'a [ServiceConfig],
 }
 
-/// [`ServiceManager::emit_select_service`]'s payload (design.md §2.2.12:
-/// `{ serviceId }`).
+/// The `{ serviceId }` payload shared by [`ServiceManager::emit_select_service`]
+/// (`select-service`, design.md §2.2.12) and
+/// [`ServiceManager::emit_service_icon_changed`] (`service-icon-changed`,
+/// design.md §2.2.10) — both events carry exactly this one field.
 #[derive(Serialize)]
-struct SelectServicePayload<'a> {
+struct ServiceIdPayload<'a> {
     #[serde(rename = "serviceId")]
     service_id: &'a str,
 }
@@ -1140,6 +1339,12 @@ pub struct ManagerSnapshot {
     /// the `Failed` state too, alongside empty `services` and no
     /// `settings` (Task 1.10; design.md §2.2.12's `activeServiceId`).
     pub active: Option<ServiceId>,
+    /// Every service that currently has a cached icon PNG (design.md
+    /// §2.2.10, §2.2.12's `get_snapshot`) — a service absent from this map
+    /// has no cache yet, and the shell renders its generated letter icon
+    /// instead. Always empty in the `Failed` state, alongside empty
+    /// `services`.
+    pub icons: BTreeMap<ServiceId, CachedIcon>,
 }
 
 /// [`ServiceManager::with_notify_state`]'s return value: a service's

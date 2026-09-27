@@ -122,6 +122,37 @@ describe("isDisallowedIconHost", () => {
     expect(allow("http://0.0.0.0/icon.png")).toBe(true);
   });
 
+  it("rejects the whole 0.0.0.0/8 'this network' range", () => {
+    expect(allow("http://0.1.2.3/icon.png")).toBe(true);
+    expect(allow("http://0.255.255.255/icon.png")).toBe(true);
+  });
+
+  it("rejects the shared/carrier-grade-NAT range 100.64.0.0/10", () => {
+    expect(allow("http://100.64.0.1/icon.png")).toBe(true);
+    expect(allow("http://100.127.255.255/icon.png")).toBe(true);
+    expect(allow("http://100.63.255.255/icon.png")).toBe(false);
+    expect(allow("http://100.128.0.0/icon.png")).toBe(false);
+  });
+
+  it("rejects the broadcast address 255.255.255.255", () => {
+    expect(allow("http://255.255.255.255/icon.png")).toBe(true);
+  });
+
+  it("rejects IPv4 multicast 224.0.0.0/4", () => {
+    expect(allow("http://224.0.0.1/icon.png")).toBe(true);
+    expect(allow("http://239.255.255.255/icon.png")).toBe(true);
+    expect(allow("http://223.255.255.255/icon.png")).toBe(false);
+    expect(allow("http://240.0.0.0/icon.png")).toBe(false);
+  });
+
+  it("rejects the unspecified IPv6 address ::", () => {
+    expect(allow("http://[::]/icon.png")).toBe(true);
+  });
+
+  it("rejects IPv6 multicast ff00::/8", () => {
+    expect(allow("http://[ff02::1]/icon.png")).toBe(true);
+  });
+
   it("rejects loopback IPv6 (::1) from a bracketed URL host", () => {
     expect(allow("http://[::1]/icon.png")).toBe(true);
   });

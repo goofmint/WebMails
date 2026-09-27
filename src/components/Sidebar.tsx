@@ -82,6 +82,7 @@ export function Sidebar() {
           <li key={service.id}>
             <ServiceIcon
               service={service}
+              cachedIcon={snapshot.icons[service.id]}
               selected={service.id === selectedId}
               size={snapshot.sidebarWidth}
               draggable
