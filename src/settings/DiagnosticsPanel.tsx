@@ -51,6 +51,23 @@ function StatusBadge({ status }: { readonly status: ServiceStatus }) {
   return <span className={`diagnostics__badge diagnostics__badge--${status.kind}`}>{label}</span>;
 }
 
+/**
+ * The last-report cell: distinguishes a service that has never reported
+ * (`hasReported: false`) from one that has reported but whose age is
+ * unavailable because the server's clock read failed (`hasReported: true`,
+ * `lastReportAgeMs: null`) — the two `null`-ish cases `ServiceDiagnostic`
+ * keeps apart via `hasReported` rather than collapsing into one label.
+ */
+function formatLastReport(row: ServiceDiagnostic): string {
+  if (!row.hasReported) {
+    return "Never reported";
+  }
+  if (row.lastReportAgeMs === null) {
+    return "Unavailable";
+  }
+  return formatAge(row.lastReportAgeMs);
+}
+
 function DiagnosticsRow({ row }: { readonly row: ServiceDiagnostic }) {
   return (
     <tr>
@@ -58,7 +75,7 @@ function DiagnosticsRow({ row }: { readonly row: ServiceDiagnostic }) {
       <td>
         <StatusBadge status={row.status} />
       </td>
-      <td>{row.lastReportAgeMs === null ? "Never reported" : formatAge(row.lastReportAgeMs)}</td>
+      <td>{formatLastReport(row)}</td>
       <td>{row.staleCount}</td>
       <td>{row.lastStaleAt === null ? "Never" : formatTimestamp(row.lastStaleAt)}</td>
     </tr>

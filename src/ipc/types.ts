@@ -143,14 +143,18 @@ export interface SettingsPatchInput {
  * One `get_diagnostics` row (`ServiceDiagnosticDto` in
  * src-tauri/src/commands/diagnostics.rs, Task 3.3; design.md §2.2.12,
  * §9.4). `status` reuses the same `ServiceStatus` shape as `Snapshot`.
- * `lastReportAgeMs` is `null` for a service that has never reported —
- * never a fabricated number — and `lastStaleAt` is `null` before its
- * first stale episode.
+ * `lastReportAgeMs` is `null` both for a service that has never reported
+ * and for one whose age is unavailable because the server's clock read
+ * failed — never a fabricated number. `hasReported` tells these two
+ * `null` cases apart (computed server-side from whether a last-report
+ * time exists, independent of the clock read), and `lastStaleAt` is
+ * `null` before its first stale episode.
  */
 export interface ServiceDiagnostic {
   readonly serviceId: string;
   readonly name: string;
   readonly status: ServiceStatus;
+  readonly hasReported: boolean;
   readonly lastReportAgeMs: number | null;
   readonly staleCount: number;
   readonly lastStaleAt: number | null;

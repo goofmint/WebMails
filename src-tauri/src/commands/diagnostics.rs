@@ -1,6 +1,6 @@
 //! `get_diagnostics`'s response DTO and its pure assembly (Task 3.3;
 //! design.md §2.2.12: `{ services: [{ serviceId, name, status,
-//! lastReportAgeMs, staleCount, lastStaleAt }] }`).
+//! hasReported, lastReportAgeMs, staleCount, lastStaleAt }] }`).
 //!
 //! Mirrors `commands::snapshot`'s split: [`build_diagnostics`] is a pure
 //! function of already-resolved data (no lock, no Tauri, no clock read of
@@ -9,10 +9,20 @@
 //! that actually reads the clock and the liveness runtime's per-service
 //! last-report timing.
 //!
+//! `hasReported` and `lastReportAgeMs` are deliberately independent: the
+//! former is computed only from whether a last-real-report time exists
+//! for the service, never from `now_ms`, so a service that has reported
+//! but whose age is unavailable (the clock read failed) is still
+//! `hasReported: true` with `lastReportAgeMs: null` — distinct from a
+//! service that has never reported at all (`hasReported: false`,
+//! `lastReportAgeMs: null`). `DiagnosticsPanel` renders these two `null`
+//! cases differently ("Never reported" vs. "Unavailable").
+//!
 //! Only this DTO's own multi-word keys are camelCase-renamed
-//! (`lastReportAgeMs`, `staleCount`, `lastStaleAt`, `serviceId`), the same
-//! convention `SnapshotDto` uses; `status` reuses [`ServiceStatus`]'s own
-//! existing `{ kind, count?, reason? }` serialization unchanged.
+//! (`hasReported`, `lastReportAgeMs`, `staleCount`, `lastStaleAt`,
+//! `serviceId`), the same convention `SnapshotDto` uses; `status` reuses
+//! [`ServiceStatus`]'s own existing `{ kind, count?, reason? }`
+//! serialization unchanged.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -36,9 +46,20 @@ pub struct ServiceDiagnosticDto {
     pub service_id: ServiceId,
     pub name: String,
     pub status: ServiceStatus,
+    /// Whether this service has ever actually reported — i.e. has an
+    /// entry in the liveness runtime's per-service last-report timing —
+    /// computed independent of `now_ms`/`lastReportAgeMs`. `false` means
+    /// this service has never reported; `true` with a `null`
+    /// `lastReportAgeMs` means it has reported but its age is unavailable
+    /// because the clock read failed. See the module doc for why these
+    /// two `null`-age cases must stay distinguishable.
+    #[serde(rename = "hasReported")]
+    pub has_reported: bool,
     /// Milliseconds since this service's last actual report, or `null` if
-    /// it has never reported (design.md §2.2.2's "services never
-    /// reported show null age" — no fallback to e.g. `0`).
+    /// it has never reported, or if "now" was unavailable because the
+    /// clock read failed (design.md §2.2.2's "services never reported
+    /// show null age" — no fallback to e.g. `0`; use `hasReported` to
+    /// tell these two `null` cases apart).
     #[serde(rename = "lastReportAgeMs")]
     pub last_report_age_ms: Option<u64>,
     /// How many times this service has been marked `Stale` (design.md
@@ -65,11 +86,14 @@ pub struct ServiceDiagnosticDto {
 ///   liveness runtime (`LivenessMachine::last_real_report_ms`), never
 ///   `state.staleness` (that field means something different now — see
 ///   `StalenessStats::last_at`'s doc). A service absent here has never
-///   reported.
+///   reported (`hasReported: false`); this is also the sole source of
+///   `hasReported`, independent of `now_ms`.
 /// - `now_ms` — the caller's already-resolved "now" (its own [`super::
 ///   super::liveness::Clock`] read), or `None` if that read failed. `None`
 ///   here forces every row's age to `None` too, rather than fabricating a
-///   time (project rule: no fallback defaults).
+///   time (project rule: no fallback defaults) — but does not affect
+///   `hasReported`, which stays `true` for a service that has reported
+///   even when "now" is unavailable.
 pub fn build_diagnostics(
     services: &[ServiceConfig],
     statuses: &HashMap<ServiceId, ServiceStatus>,
@@ -85,7 +109,9 @@ pub fn build_diagnostics(
                 .cloned()
                 .unwrap_or(ServiceStatus::Loading);
             let stats = staleness.get(&service.id);
-            let last_report_age_ms = match (now_ms, last_report_ms.get(&service.id)) {
+            let last_report = last_report_ms.get(&service.id);
+            let has_reported = last_report.is_some();
+            let last_report_age_ms = match (now_ms, last_report) {
                 (Some(now_ms), Some(&last_ms)) => Some(now_ms.saturating_sub(last_ms)),
                 _ => None,
             };
@@ -93,6 +119,7 @@ pub fn build_diagnostics(
                 service_id: service.id.clone(),
                 name: service.name.clone(),
                 status,
+                has_reported,
                 last_report_age_ms,
                 stale_count: stats.map(|s| s.count).unwrap_or(0),
                 last_stale_at: stats.and_then(|s| s.last_at),
@@ -148,7 +175,8 @@ mod tests {
     }
 
     #[test]
-    fn a_service_that_never_reported_has_a_null_age_even_when_now_is_known() {
+    fn a_service_that_never_reported_has_a_null_age_and_has_reported_false_even_when_now_is_known()
+    {
         let services = vec![service("gmail", "Gmail")];
         let dto = build_diagnostics(
             &services,
@@ -157,14 +185,18 @@ mod tests {
             &HashMap::new(), // no entry for "gmail": never reported
             Some(1_000),
         );
+        assert!(!dto.services[0].has_reported);
         assert_eq!(dto.services[0].last_report_age_ms, None);
     }
 
     #[test]
-    fn a_service_that_reported_gets_a_null_age_when_now_is_unknown() {
+    fn a_service_that_reported_gets_has_reported_true_and_a_null_age_when_now_is_unknown() {
         // The clock read failed (caller passes `None`): every age must be
         // `None`, never a fabricated value — even for a service that has
-        // a last-report time on record.
+        // a last-report time on record. `has_reported` must still be
+        // `true`, since it is computed independent of `now_ms` — this is
+        // exactly the "reported but age unavailable" case `DiagnosticsPanel`
+        // renders as "Unavailable", distinct from "Never reported".
         let services = vec![service("gmail", "Gmail")];
         let mut last_report_ms = HashMap::new();
         last_report_ms.insert(ServiceId::new("gmail").expect("valid id"), 500);
@@ -176,11 +208,12 @@ mod tests {
             &last_report_ms,
             None,
         );
+        assert!(dto.services[0].has_reported);
         assert_eq!(dto.services[0].last_report_age_ms, None);
     }
 
     #[test]
-    fn a_service_that_reported_gets_the_elapsed_time_since_its_last_report() {
+    fn a_service_that_reported_gets_has_reported_true_and_the_elapsed_time_since_its_last_report() {
         let services = vec![service("gmail", "Gmail")];
         let mut last_report_ms = HashMap::new();
         last_report_ms.insert(ServiceId::new("gmail").expect("valid id"), 500);
@@ -192,6 +225,7 @@ mod tests {
             &last_report_ms,
             Some(1_500),
         );
+        assert!(dto.services[0].has_reported);
         assert_eq!(dto.services[0].last_report_age_ms, Some(1_000));
     }
 
@@ -285,6 +319,7 @@ mod tests {
                     "serviceId": "gmail",
                     "name": "Gmail",
                     "status": { "kind": "loading" },
+                    "hasReported": true,
                     "lastReportAgeMs": 100,
                     "staleCount": 2,
                     "lastStaleAt": 42

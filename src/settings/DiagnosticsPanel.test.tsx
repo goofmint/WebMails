@@ -43,6 +43,7 @@ const THREE_SERVICE_DIAGNOSTICS: Diagnostics = {
       serviceId: "gmail",
       name: "Gmail",
       status: { kind: "ok", count: 3 },
+      hasReported: true,
       lastReportAgeMs: 12_000,
       staleCount: 0,
       lastStaleAt: null,
@@ -51,6 +52,7 @@ const THREE_SERVICE_DIAGNOSTICS: Diagnostics = {
       serviceId: "icloud",
       name: "iCloud",
       status: { kind: "loading" },
+      hasReported: false,
       lastReportAgeMs: null,
       staleCount: 0,
       lastStaleAt: null,
@@ -59,6 +61,7 @@ const THREE_SERVICE_DIAGNOSTICS: Diagnostics = {
       serviceId: "outlook",
       name: "Outlook",
       status: { kind: "needsAttention", reason: "reportedNone" },
+      hasReported: true,
       lastReportAgeMs: 5_000,
       staleCount: 1,
       lastStaleAt: 1_700_000_000_000,
@@ -67,6 +70,7 @@ const THREE_SERVICE_DIAGNOSTICS: Diagnostics = {
       serviceId: "yahoo",
       name: "Yahoo",
       status: { kind: "stale" },
+      hasReported: true,
       lastReportAgeMs: 130_000,
       staleCount: 2,
       lastStaleAt: 1_700_000_100_000,
@@ -131,6 +135,41 @@ describe("DiagnosticsPanel", () => {
     expect(lastStaleCell.textContent).toBe("Never");
   });
 
+  it("shows Unavailable (not Never reported) for a service that has reported but whose age is null", async () => {
+    // `hasReported: true` with a `null` `lastReportAgeMs` means the service
+    // has reported before, but the server's clock read failed this time —
+    // distinct from a service that has never reported at all, which must
+    // keep showing "Never reported" (asserted in the test above).
+    const UNAVAILABLE_AGE_DIAGNOSTICS: Diagnostics = {
+      services: [
+        {
+          serviceId: "gmail",
+          name: "Gmail",
+          status: { kind: "ok", count: 3 },
+          hasReported: true,
+          lastReportAgeMs: null,
+          staleCount: 0,
+          lastStaleAt: null,
+        },
+      ],
+    };
+    mockGetDiagnostics(() => Promise.resolve(UNAVAILABLE_AGE_DIAGNOSTICS));
+
+    render(<DiagnosticsPanel />);
+    await screen.findByText("Gmail");
+
+    const row = screen.getByText("Gmail").closest("tr");
+    if (row === null) {
+      throw new Error("expected the Gmail row to exist");
+    }
+    const cells = Array.from(row.querySelectorAll("td"));
+    const lastReportCell = cells[2];
+    if (lastReportCell === undefined) {
+      throw new Error("expected a last-report cell in the Gmail row");
+    }
+    expect(lastReportCell.textContent).toBe("Unavailable");
+  });
+
   it("refetches when the refresh button is clicked", async () => {
     mockGetDiagnostics(() => Promise.resolve(THREE_SERVICE_DIAGNOSTICS));
 
@@ -191,6 +230,7 @@ describe("DiagnosticsPanel", () => {
           serviceId: "gmail",
           name: "Older result",
           status: { kind: "ok", count: 1 },
+          hasReported: true,
           lastReportAgeMs: 1_000,
           staleCount: 0,
           lastStaleAt: null,
@@ -203,6 +243,7 @@ describe("DiagnosticsPanel", () => {
           serviceId: "gmail",
           name: "Newer result",
           status: { kind: "ok", count: 2 },
+          hasReported: true,
           lastReportAgeMs: 2_000,
           staleCount: 0,
           lastStaleAt: null,
