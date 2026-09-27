@@ -173,6 +173,20 @@ impl<B: ProfileBackend + Send + Sync> WebviewHost for MultiwebviewHost<B> {
             .add_child(builder, to_position(offscreen), to_size(offscreen))
             .map_err(AppError::from)?;
 
+        // Windows only (design.md §2.2.11, Task 4.3): denies the
+        // `NOTIFICATIONS` permission at the WebView2 layer, alongside the
+        // agent's own `Notification` stub. Only the *dispatch* to
+        // `with_webview` can fail here (see `platform::webview2`'s doc
+        // comment); that failure is logged rather than turned into an
+        // `AppError`, since the webview itself was created successfully.
+        #[cfg(windows)]
+        if let Err(err) = crate::platform::webview2::deny_notification_permission(&webview) {
+            tracing::error!(
+                "webview2: failed to register permission handler for service '{}': {err}",
+                spec.id
+            );
+        }
+
         registry.webviews.insert(spec.id, webview);
         Ok(())
     }

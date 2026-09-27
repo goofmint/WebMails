@@ -114,6 +114,18 @@ describe("bootstrapAgent", () => {
     expect(win.__ELUMA__).toBeUndefined();
   });
 
+  it.each([
+    ["missing", undefined],
+    ["invalid serviceUrl", { ...VALID_BOOTSTRAP, serviceUrl: "not a url" }],
+  ] as const)("installs the Notification stub even when __ELUMA__ is %s", (_label, bootstrap) => {
+    const win = makeWindow(bootstrap === undefined ? {} : { bootstrap });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    bootstrapAgent(win, { invoke: noopInvoke(), scheduler: noopScheduler });
+
+    expect(win.Notification?.permission).toBe("denied");
+  });
+
   it("logs and stops when __ELUMA__ is missing", () => {
     const win = makeWindow({});
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
