@@ -8,13 +8,21 @@
 
 import { vi, type Mock } from "vitest";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import type { ServiceConfig, ServicePatchInput, SettingsIpc, Snapshot } from "../ipc";
+import type {
+  ServiceConfig,
+  ServicePatchInput,
+  Settings,
+  SettingsIpc,
+  SettingsPatchInput,
+  Snapshot,
+} from "../ipc";
 
 export interface MockSettingsIpc extends SettingsIpc {
   readonly getSnapshot: Mock<() => Promise<Snapshot>>;
   readonly addService: Mock<(name: string, url: string, profile: string) => Promise<ServiceConfig>>;
   readonly updateService: Mock<(id: string, patch: ServicePatchInput) => Promise<ServiceConfig>>;
   readonly removeService: Mock<(id: string, deleteSessionData: boolean) => Promise<void>>;
+  readonly updateSettings: Mock<(patch: SettingsPatchInput) => Promise<Settings>>;
   readonly selectService: Mock<(id: string) => Promise<void>>;
   emitServicesChanged(): void;
 }
@@ -22,8 +30,16 @@ export interface MockSettingsIpc extends SettingsIpc {
 /** Creates a mock `SettingsIpc` whose `getSnapshot` initially resolves to `initialSnapshot`. */
 export function createMockSettingsIpc(initialSnapshot: Snapshot): MockSettingsIpc {
   let servicesChangedListeners: (() => void)[] = [];
+  // The settings actually "on disk" as far as this mock is concerned —
+  // starts as the initial snapshot's, and each `updateSettings` call
+  // replaces it with the patch applied on top, so `getSnapshot` and the
+  // next `updateSettings` both see every earlier save, not just the
+  // first one.
+  let currentSettings = initialSnapshot.settings;
 
-  const getSnapshot = vi.fn((): Promise<Snapshot> => Promise.resolve(initialSnapshot));
+  const getSnapshot = vi.fn((): Promise<Snapshot> =>
+    Promise.resolve({ ...initialSnapshot, settings: currentSettings }),
+  );
 
   const addService = vi.fn((name: string, url: string, profile: string): Promise<ServiceConfig> =>
     Promise.resolve({
@@ -48,6 +64,15 @@ export function createMockSettingsIpc(initialSnapshot: Snapshot): MockSettingsIp
   );
 
   const removeService = vi.fn((): Promise<void> => Promise.resolve());
+
+  const updateSettings = vi.fn((patch: SettingsPatchInput): Promise<Settings> => {
+    if (currentSettings === null) {
+      return Promise.reject(new Error("createMockSettingsIpc: no initial settings to patch"));
+    }
+    currentSettings = { ...currentSettings, ...patch };
+    return Promise.resolve(currentSettings);
+  });
+
   const selectService = vi.fn((): Promise<void> => Promise.resolve());
 
   function onServicesChanged(callback: () => void): Promise<UnlistenFn> {
@@ -64,6 +89,7 @@ export function createMockSettingsIpc(initialSnapshot: Snapshot): MockSettingsIp
     addService,
     updateService,
     removeService,
+    updateSettings,
     selectService,
     onServicesChanged,
     emitServicesChanged() {

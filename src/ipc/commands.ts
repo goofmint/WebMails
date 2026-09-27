@@ -12,7 +12,13 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import type { ServiceConfig, ServicePatchInput, Snapshot } from "./types";
+import type {
+  ServiceConfig,
+  ServicePatchInput,
+  Settings,
+  SettingsPatchInput,
+  Snapshot,
+} from "./types";
 
 /** `get_snapshot` — no input, `Snapshot` output (design.md §2.2.12). */
 export async function getSnapshot(): Promise<Snapshot> {
@@ -79,4 +85,16 @@ export async function updateService(id: string, patch: ServicePatchInput): Promi
  */
 export async function removeService(id: string, deleteSessionData: boolean): Promise<void> {
   await invoke<void>("remove_service", { id, deleteSessionData });
+}
+
+/**
+ * `update_settings` — input `{ patch }`, output the updated `Settings`
+ * (Task 1.13; design.md §2.2.13's "Global settings: every `[settings]`
+ * key."). Only the fields actually being changed should be present on
+ * `patch` — an omitted key leaves that field untouched server-side
+ * (`SettingsPatchDto`'s `Option<T>` fields deserialize to `None` when the
+ * key is absent).
+ */
+export async function updateSettings(patch: SettingsPatchInput): Promise<Settings> {
+  return invoke<Settings>("update_settings", { patch });
 }

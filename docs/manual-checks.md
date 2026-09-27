@@ -96,6 +96,12 @@ For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/
 - [ ] A service whose icon candidates and override both fail to resolve (e.g. unreachable URL) falls back to the generated letter icon, with no crash or stuck loading state (macOS/Windows)
 - [ ] Removing a service and re-adding one under the same id starts icon resolution fresh (no stale cached PNG reused) (macOS/Windows)
 
+### Task 1.13 — Settings window: global settings
+
+For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/fail, with notes) before checking it off.
+
+- [ ] Editing a global setting (e.g. the reconcile interval) in the settings window's global settings form, saving, then reopening `config.toml` in a text editor shows the new value with the rest of the file's comments and formatting intact (macOS/Windows) — the automated equivalent is `src-tauri/src/config/store.rs`'s `update_settings_*` tests (Task 1.3/1.13); this item is the real-file confirmation
+
 ## M2 — Unread
 
 Exit criterion (SPEC §16): N Gmail accounts plus iCloud show live counts while the window is in the background.
