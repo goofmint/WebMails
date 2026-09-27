@@ -13,6 +13,7 @@ import { toCommandError } from "../ipc";
 import { ServiceList } from "./ServiceList";
 import { AddServiceForm } from "./AddServiceForm";
 import { GlobalSettingsForm } from "./GlobalSettingsForm";
+import { RecipePanel } from "./RecipePanel";
 import "./settings.css";
 
 export interface SettingsAppProps {
@@ -127,6 +128,7 @@ export function SettingsApp({ ipc }: SettingsAppProps) {
       ) : (
         <GlobalSettingsForm ipc={ipc} settings={snapshot.settings} />
       )}
+      <RecipePanel services={snapshot.services} />
     </div>
   );
 }
