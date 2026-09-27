@@ -357,7 +357,7 @@ describe("gmail recipe", () => {
   });
 
   describe("read() — fetch rejection (cross-origin, etc.)", () => {
-    it("falls back to the title count without changing mode when ctx.fetch rejects", async () => {
+    it("reports count null without changing mode when ctx.fetch rejects", async () => {
       const recipe = createGmailRecipe();
       const ctx = makeContext({
         title: "Inbox (1) - someone@example.com - Gmail",
@@ -365,7 +365,7 @@ describe("gmail recipe", () => {
       });
 
       const result = await recipe.read(ctx);
-      expect(result).toEqual({ count: 1, messages: [] });
+      expect(result).toEqual({ count: null });
       // Unvalidated + a plain fetch rejection is not a validation failure:
       // the recipe is still willing to try the feed again next time.
       expect(recipe.describe(SERVICE_URL).strategy).toBe("fetch");

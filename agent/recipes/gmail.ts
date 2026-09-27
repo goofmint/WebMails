@@ -241,11 +241,11 @@ export function createGmailRecipe(): Recipe {
       try {
         fetched = await fetchText(ctx, gmailFeedPath(ctx.serviceUrl));
       } catch {
-        // A transient fetch failure (including a cross-origin rejection
-        // from `SameOriginFetch`, e.g. a login redirect that left Gmail's
-        // origin entirely) never changes `mode`: it's read as a one-off
-        // miss, not evidence the feed is unusable going forward.
-        return titleOnlyResult(ctx);
+        // A fetch failure (network error, or a cross-origin rejection from
+        // `SameOriginFetch`, e.g. a login redirect that left Gmail's origin)
+        // is a failed read: report `count: null` for this cycle (design.md
+        // §5.1). It never changes `mode`, so the next read retries the feed.
+        return { count: null };
       }
 
       const titleHasCount = titleCount(ctx.document, GMAIL_TITLE_PATTERN) !== null;
