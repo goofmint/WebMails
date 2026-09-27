@@ -69,8 +69,16 @@ function requestPermission(
 ): Promise<NotificationPermission> {
   // Legacy callback form (pre-Promise API): invoked with the same fixed
   // result the returned Promise resolves with.
+  // Called asynchronously, like the real API; a throwing callback is
+  // reported and never affects the returned Promise.
   if (typeof deprecatedCallback === "function") {
-    deprecatedCallback(DENIED_PERMISSION);
+    queueMicrotask(() => {
+      try {
+        deprecatedCallback(DENIED_PERMISSION);
+      } catch (error) {
+        console.error("[eluma-agent] Notification.requestPermission callback threw", error);
+      }
+    });
   }
   return Promise.resolve(DENIED_PERMISSION);
 }

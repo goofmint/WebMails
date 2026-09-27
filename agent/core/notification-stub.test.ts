@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { NotificationConstructorLike, NotificationStubWindow } from "./notification-stub";
 import { installNotificationStub } from "./notification-stub";
 
@@ -39,8 +39,26 @@ describe("installNotificationStub", () => {
       received.push(permission);
     });
 
+    // Called asynchronously, not during requestPermission() itself.
+    expect(received).toEqual([]);
     await expect(promise).resolves.toBe("denied");
+    await Promise.resolve();
     expect(received).toEqual(["denied"]);
+  });
+
+  it("still resolves to 'denied' when the legacy callback throws", async () => {
+    const win = makeWindow();
+    installNotificationStub(win);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const promise = installedStub(win).requestPermission(() => {
+      throw new Error("page callback failed");
+    });
+
+    await expect(promise).resolves.toBe("denied");
+    await Promise.resolve();
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
   });
 
   it("throws when the stub is invoked as a constructor", () => {

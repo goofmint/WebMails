@@ -65,6 +65,12 @@ export function bootstrapAgent(win: AgentWindow, deps: BootstrapDeps = {}): void
     return;
   }
 
+  // Install the Notification stub first, before any page script runs and
+  // before any check below can return early (design.md §2.2.14
+  // "Notification stub", Task 4.3): a page must never get the real API,
+  // even if the bootstrap config turns out to be invalid.
+  installNotificationStub(win);
+
   // Step 2: read, then immediately delete, window.__ELUMA__.
   const bootstrap = win.__ELUMA__;
   delete win.__ELUMA__;
@@ -83,10 +89,6 @@ export function bootstrapAgent(win: AgentWindow, deps: BootstrapDeps = {}): void
     );
     return;
   }
-
-  // Step 3: install the Notification stub, before any recipe code (or any
-  // page script) runs (design.md §2.2.14 "Notification stub", Task 4.3).
-  installNotificationStub(win);
 
   // Step 4: recipe selection.
   const recipe = matchRecipe(serviceUrl);
