@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Gmail</title>
+  </head>
+  <body>
+    <!--
+      A stand-in for the HTML Gmail serves when the feed request is
+      redirected to a sign-in page because the session has expired. The
+      Gmail recipe never parses this body: a redirected fetch is decided
+      from `FetchTextResult.redirected`/`status` plus the document title
+      alone (design.md §2.2.14), before any Atom parsing is attempted. This
+      fixture exists so tests can assert that the body is safely ignored.
+    -->
+    <form action="https://accounts.google.com/ServiceLogin" method="post">
+      <input type="email" name="Email" />
+      <input type="password" name="Passwd" />
+    </form>
+  </body>
+</html>
