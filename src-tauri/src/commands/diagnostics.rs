@@ -9,10 +9,13 @@
 //! that actually reads the clock and the liveness runtime's per-service
 //! last-report timing.
 //!
-//! `hasReported` and `lastReportAgeMs` are deliberately independent: the
-//! former is computed only from whether a last-real-report time exists
-//! for the service, never from `now_ms`, so a service that has reported
-//! but whose age is unavailable (the clock read failed) is still
+//! `hasReported` and `lastReportAgeMs` are deliberately independent:
+//! `hasReported` is computed only from `liveness::LivenessMachine`'s own
+//! report-presence flag (`mark_reported`/`has_reported`, set unconditionally
+//! by `LivenessRuntime::record_report` before it ever reads the clock),
+//! never from `now_ms` or from whether a last-real-report *timestamp* is
+//! known, so a service that has reported but whose age is unavailable (the
+//! clock read failed, at report time or at diagnostics time) is still
 //! `hasReported: true` with `lastReportAgeMs: null` — distinct from a
 //! service that has never reported at all (`hasReported: false`,
 //! `lastReportAgeMs: null`). `DiagnosticsPanel` renders these two `null`
@@ -24,7 +27,7 @@
 //! [`ServiceStatus`]'s own existing `{ kind, count?, reason? }`
 //! serialization unchanged.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::Serialize;
 
@@ -46,13 +49,14 @@ pub struct ServiceDiagnosticDto {
     pub service_id: ServiceId,
     pub name: String,
     pub status: ServiceStatus,
-    /// Whether this service has ever actually reported — i.e. has an
-    /// entry in the liveness runtime's per-service last-report timing —
-    /// computed independent of `now_ms`/`lastReportAgeMs`. `false` means
+    /// Whether this service has ever actually reported — i.e. the liveness
+    /// runtime's report-presence flag is set for it (`LivenessMachine::
+    /// has_reported`) — computed independent of `now_ms`/`lastReportAgeMs`
+    /// and of whether a report *timestamp* is on record. `false` means
     /// this service has never reported; `true` with a `null`
     /// `lastReportAgeMs` means it has reported but its age is unavailable
-    /// because the clock read failed. See the module doc for why these
-    /// two `null`-age cases must stay distinguishable.
+    /// because a clock read failed. See the module doc for why these two
+    /// `null`-age cases must stay distinguishable.
     #[serde(rename = "hasReported")]
     pub has_reported: bool,
     /// Milliseconds since this service's last actual report, or `null` if
@@ -82,12 +86,19 @@ pub struct ServiceDiagnosticDto {
 ///   no-report-yet meaning).
 /// - `staleness` — `state.staleness`; a service absent from it defaults to
 ///   `{ count: 0, last_at: None }` (never having gone stale).
-/// - `last_report_ms` — per-service last-actual-report time from the
+/// - `reported` — per-service report-presence flags from the liveness
+///   runtime (`LivenessMachine::has_reported`, set unconditionally by
+///   `LivenessRuntime::record_report` before it ever reads the clock). A
+///   service absent here has never reported (`hasReported: false`); this
+///   is the sole source of `hasReported`, independent of both `now_ms` and
+///   `last_report_ms`.
+/// - `last_report_ms` — per-service last-actual-report *time* from the
 ///   liveness runtime (`LivenessMachine::last_real_report_ms`), never
 ///   `state.staleness` (that field means something different now — see
-///   `StalenessStats::last_at`'s doc). A service absent here has never
-///   reported (`hasReported: false`); this is also the sole source of
-///   `hasReported`, independent of `now_ms`.
+///   `StalenessStats::last_at`'s doc). A service can be present in
+///   `reported` but absent here (it reported, but the clock read backing
+///   that report's timestamp failed) — that row still gets
+///   `hasReported: true`, just with a `null` `lastReportAgeMs`.
 /// - `now_ms` — the caller's already-resolved "now" (its own [`super::
 ///   super::liveness::Clock`] read), or `None` if that read failed. `None`
 ///   here forces every row's age to `None` too, rather than fabricating a
@@ -98,6 +109,7 @@ pub fn build_diagnostics(
     services: &[ServiceConfig],
     statuses: &HashMap<ServiceId, ServiceStatus>,
     staleness: &BTreeMap<ServiceId, StalenessStats>,
+    reported: &HashSet<ServiceId>,
     last_report_ms: &HashMap<ServiceId, u64>,
     now_ms: Option<u64>,
 ) -> DiagnosticsDto {
@@ -109,8 +121,8 @@ pub fn build_diagnostics(
                 .cloned()
                 .unwrap_or(ServiceStatus::Loading);
             let stats = staleness.get(&service.id);
+            let has_reported = reported.contains(&service.id);
             let last_report = last_report_ms.get(&service.id);
-            let has_reported = last_report.is_some();
             let last_report_age_ms = match (now_ms, last_report) {
                 (Some(now_ms), Some(&last_ms)) => Some(now_ms.saturating_sub(last_ms)),
                 _ => None,
@@ -135,6 +147,12 @@ mod tests {
     use crate::config::{IconSource, ProfileName};
     use serde_json::json;
 
+    fn reported_set(ids: &[&str]) -> HashSet<ServiceId> {
+        ids.iter()
+            .map(|id| ServiceId::new(*id).expect("valid id"))
+            .collect()
+    }
+
     fn service(id: &str, name: &str) -> ServiceConfig {
         ServiceConfig {
             id: ServiceId::new(id).expect("valid id"),
@@ -153,6 +171,7 @@ mod tests {
             &services,
             &HashMap::new(),
             &BTreeMap::new(),
+            &HashSet::new(),
             &HashMap::new(),
             Some(1_000),
         );
@@ -167,6 +186,7 @@ mod tests {
             &services,
             &HashMap::new(),
             &BTreeMap::new(),
+            &HashSet::new(),
             &HashMap::new(),
             Some(1_000),
         );
@@ -182,7 +202,8 @@ mod tests {
             &services,
             &HashMap::new(),
             &BTreeMap::new(),
-            &HashMap::new(), // no entry for "gmail": never reported
+            &HashSet::new(), // no presence entry for "gmail": never reported
+            &HashMap::new(),
             Some(1_000),
         );
         assert!(!dto.services[0].has_reported);
@@ -194,10 +215,12 @@ mod tests {
         // The clock read failed (caller passes `None`): every age must be
         // `None`, never a fabricated value — even for a service that has
         // a last-report time on record. `has_reported` must still be
-        // `true`, since it is computed independent of `now_ms` — this is
-        // exactly the "reported but age unavailable" case `DiagnosticsPanel`
-        // renders as "Unavailable", distinct from "Never reported".
+        // `true`, since it comes from the presence set, independent of
+        // `now_ms` — this is exactly the "reported but age unavailable"
+        // case `DiagnosticsPanel` renders as "Unavailable", distinct from
+        // "Never reported".
         let services = vec![service("gmail", "Gmail")];
+        let reported = reported_set(&["gmail"]);
         let mut last_report_ms = HashMap::new();
         last_report_ms.insert(ServiceId::new("gmail").expect("valid id"), 500);
 
@@ -205,6 +228,7 @@ mod tests {
             &services,
             &HashMap::new(),
             &BTreeMap::new(),
+            &reported,
             &last_report_ms,
             None,
         );
@@ -213,8 +237,30 @@ mod tests {
     }
 
     #[test]
+    fn a_service_that_reported_but_whose_report_timestamp_is_unavailable_still_has_reported_true() {
+        // The presence flag is set (a report validated) but the timestamp
+        // map has no entry (the clock read backing that report's `touch`
+        // failed) — `hasReported` must still be `true`, with a `null` age,
+        // never `hasReported: false`.
+        let services = vec![service("gmail", "Gmail")];
+        let reported = reported_set(&["gmail"]);
+
+        let dto = build_diagnostics(
+            &services,
+            &HashMap::new(),
+            &BTreeMap::new(),
+            &reported,
+            &HashMap::new(), // no timestamp on record
+            Some(1_000),
+        );
+        assert!(dto.services[0].has_reported);
+        assert_eq!(dto.services[0].last_report_age_ms, None);
+    }
+
+    #[test]
     fn a_service_that_reported_gets_has_reported_true_and_the_elapsed_time_since_its_last_report() {
         let services = vec![service("gmail", "Gmail")];
+        let reported = reported_set(&["gmail"]);
         let mut last_report_ms = HashMap::new();
         last_report_ms.insert(ServiceId::new("gmail").expect("valid id"), 500);
 
@@ -222,6 +268,7 @@ mod tests {
             &services,
             &HashMap::new(),
             &BTreeMap::new(),
+            &reported,
             &last_report_ms,
             Some(1_500),
         );
@@ -245,6 +292,7 @@ mod tests {
             &services,
             &HashMap::new(),
             &staleness,
+            &HashSet::new(),
             &HashMap::new(),
             Some(1_000),
         );
@@ -259,6 +307,7 @@ mod tests {
             &services,
             &HashMap::new(),
             &BTreeMap::new(),
+            &HashSet::new(),
             &HashMap::new(),
             Some(1_000),
         );
@@ -283,6 +332,7 @@ mod tests {
             &services,
             &statuses,
             &BTreeMap::new(),
+            &HashSet::new(),
             &HashMap::new(),
             Some(1_000),
         );
@@ -300,6 +350,7 @@ mod tests {
                 last_at: Some(42),
             },
         );
+        let reported = reported_set(&["gmail"]);
         let mut last_report_ms = HashMap::new();
         last_report_ms.insert(ServiceId::new("gmail").expect("valid id"), 900);
 
@@ -307,6 +358,7 @@ mod tests {
             &services,
             &HashMap::new(),
             &staleness,
+            &reported,
             &last_report_ms,
             Some(1_000),
         );
@@ -334,6 +386,7 @@ mod tests {
             &[],
             &HashMap::new(),
             &BTreeMap::new(),
+            &HashSet::new(),
             &HashMap::new(),
             None,
         );

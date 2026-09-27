@@ -347,8 +347,17 @@ impl LivenessRuntime {
     /// `crate::state::StalenessStats::last_at`'s own doc); a service's
     /// last *report* time lives only in the in-memory liveness machine
     /// ([`Self::last_real_report_ms`]), never persisted.
+    ///
+    /// [`LivenessMachine::mark_reported`] is recorded first, *before*
+    /// [`evaluate_touch`] is even attempted: the presence half of "has
+    /// this service reported" (task 3.3's `get_diagnostics`'s
+    /// `hasReported`) must not depend on the clock read `evaluate_touch`
+    /// needs, so a clock failure there still leaves this call's report
+    /// counted as received — only its timestamp
+    /// ([`Self::last_real_report_ms`]) is then unavailable.
     pub fn record_report(&self, id: &ServiceId) {
         let mut machine = self.lock_machine();
+        machine.mark_reported(id);
         evaluate_touch(self.clock.as_ref(), &mut machine, id);
     }
 
@@ -366,6 +375,16 @@ impl LivenessRuntime {
     /// not `state.staleness[id].last_at`, for "last report age").
     pub fn last_real_report_ms(&self, id: &ServiceId) -> Option<u64> {
         self.lock_machine().last_real_report_ms(id)
+    }
+
+    /// Whether `id` has ever sent a validated report (task 3.3's
+    /// `get_diagnostics`'s `hasReported`) — the presence flag [`Self::
+    /// record_report`] sets unconditionally, independent of
+    /// [`Self::last_real_report_ms`]'s clock-backed timestamp (see
+    /// [`LivenessMachine::mark_reported`]'s own doc for why these two must
+    /// stay independent).
+    pub fn has_reported(&self, id: &ServiceId) -> bool {
+        self.lock_machine().has_reported(id)
     }
 
     /// Recovers from a poisoned lock the same way `ServiceManager::
@@ -616,5 +635,39 @@ mod tests {
     #[test]
     fn is_newer_last_at_false_for_an_earlier_time() {
         assert!(!is_newer_last_at(999, Some(1_000)));
+    }
+
+    // --- record_report: presence independent of the clock (review finding) -
+
+    /// Reproduces [`LivenessRuntime::record_report`]'s own body exactly
+    /// (`mark_reported` first, then `evaluate_touch`) against the two
+    /// pieces that body actually is — [`LivenessMachine::mark_reported`]
+    /// and [`evaluate_touch`] — since building a real [`LivenessRuntime`]
+    /// needs a live `AppHandle`/`ServiceManager`/`StateStore` this module's
+    /// other tests avoid entirely.
+    fn record_report_sequence(clock: &dyn Clock, machine: &mut LivenessMachine, id: &ServiceId) {
+        machine.mark_reported(id);
+        evaluate_touch(clock, machine, id);
+    }
+
+    #[test]
+    fn record_report_marks_has_reported_even_when_the_clock_fails() {
+        let mut machine = LivenessMachine::new();
+        record_report_sequence(&FailingClock, &mut machine, &id("gmail"));
+
+        // Presence survives the clock failure ...
+        assert!(machine.has_reported(&id("gmail")));
+        // ... but the timestamp does not: `get_diagnostics` must report a
+        // `null` age for this service, not a fabricated one.
+        assert_eq!(machine.last_real_report_ms(&id("gmail")), None);
+    }
+
+    #[test]
+    fn record_report_normal_path_sets_both_presence_and_the_timestamp() {
+        let mut machine = LivenessMachine::new();
+        record_report_sequence(&FixedClock(42), &mut machine, &id("gmail"));
+
+        assert!(machine.has_reported(&id("gmail")));
+        assert_eq!(machine.last_real_report_ms(&id("gmail")), Some(42));
     }
 }

@@ -27,7 +27,7 @@ mod diagnostics;
 mod dto;
 mod snapshot;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
@@ -263,7 +263,11 @@ pub async fn refresh_icon(
 /// same runtime's injected [`crate::liveness::Clock`] — never
 /// `SystemTime::now()` directly — and a clock failure produces `None`
 /// (`build_diagnostics` then reports every age as `null`, never a
-/// fabricated value: project rule, no fallback defaults).
+/// fabricated value: project rule, no fallback defaults). `hasReported`,
+/// by contrast, comes from `LivenessRuntime::has_reported` — a plain
+/// presence flag set unconditionally by `record_report`, independent of
+/// this clock — so it stays `true` even for a service whose report
+/// timestamp is unavailable because a clock read failed.
 #[tauri::command]
 pub async fn get_diagnostics(
     app: AppHandle,
@@ -275,6 +279,15 @@ pub async fn get_diagnostics(
     let now_ms = liveness
         .as_deref()
         .and_then(|liveness| liveness.now_ms().ok());
+    let reported: HashSet<ServiceId> = match liveness.as_deref() {
+        Some(liveness) => snapshot
+            .services
+            .iter()
+            .filter(|service| liveness.has_reported(&service.id))
+            .map(|service| service.id.clone())
+            .collect(),
+        None => HashSet::new(),
+    };
     let last_report_ms: HashMap<ServiceId, u64> = match liveness.as_deref() {
         Some(liveness) => snapshot
             .services
@@ -292,6 +305,7 @@ pub async fn get_diagnostics(
         &snapshot.services,
         &snapshot.statuses,
         &snapshot.staleness,
+        &reported,
         &last_report_ms,
         now_ms,
     ))

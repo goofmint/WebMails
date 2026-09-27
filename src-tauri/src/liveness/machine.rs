@@ -10,7 +10,7 @@
 //! [`LivenessMachine::touch`] deterministic and unit-testable below
 //! without any real waiting.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use crate::config::ServiceId;
@@ -103,12 +103,14 @@ struct ServiceLiveness {
     /// only by [`LivenessMachine::touch`] (called when a validated report
     /// arrives, design.md §2.2.6), never by `tick`'s own auto-registration
     /// of a newly-seen id (which seeds [`Self::last_report_ms`] as a
-    /// staleness baseline, not a report). `None` means this service has
-    /// never actually reported since this machine started tracking it —
-    /// distinct from `last_report_ms`, which task 3.3's `get_diagnostics`
-    /// must not use for "last report age", since that field's baseline can
-    /// predate any real report (design.md §2.2.12: "services never
-    /// reported show null age").
+    /// staleness baseline, not a report). `None` means either this service
+    /// has never actually reported, or it has but the clock read backing
+    /// that `touch` failed (see [`LivenessMachine::mark_reported`]/[`Self::
+    /// has_reported`] for the presence flag that does not depend on the
+    /// clock) — distinct from `last_report_ms`, which task 3.3's
+    /// `get_diagnostics` must not use for "last report age", since that
+    /// field's baseline can predate any real report (design.md §2.2.12:
+    /// "services never reported show null age").
     last_real_report_ms: Option<u64>,
 }
 
@@ -147,13 +149,43 @@ fn is_exempt(status: &ServiceStatus) -> bool {
 #[derive(Debug, Default)]
 pub struct LivenessMachine {
     services: BTreeMap<ServiceId, ServiceLiveness>,
+    /// Which services have ever sent a validated report — set only by
+    /// [`Self::mark_reported`], independent of [`Self::touch`] and of the
+    /// clock entirely (task 3.3's `get_diagnostics`'s `hasReported`: it
+    /// must stay `true` even when the clock read backing a report's
+    /// `touch` fails — see [`super::runtime::LivenessRuntime::
+    /// record_report`], which calls `mark_reported` unconditionally,
+    /// before attempting that clock-backed `touch`). Cleared wherever a
+    /// service stops being tracked ([`Self::remove`], and `tick`'s own
+    /// reconciliation against `statuses`), so presence never outlives the
+    /// service it describes.
+    reported: BTreeSet<ServiceId>,
 }
 
 impl LivenessMachine {
     pub fn new() -> Self {
         LivenessMachine {
             services: BTreeMap::new(),
+            reported: BTreeSet::new(),
         }
+    }
+
+    /// Records that `id` has sent at least one validated report — the
+    /// presence half of "has this service reported", kept independent of
+    /// [`Self::touch`]'s clock-backed timestamp (see [`Self::reported`]'s
+    /// own doc). Idempotent; registers nothing else about `id` (in
+    /// particular, does not seed a [`ServiceLiveness`] entry — `tick`'s own
+    /// auto-registration and [`Self::touch`] remain the only sources of
+    /// that).
+    pub fn mark_reported(&mut self, id: &ServiceId) {
+        self.reported.insert(id.clone());
+    }
+
+    /// Whether `id` has ever sent a validated report (task 3.3's
+    /// `get_diagnostics`'s `hasReported`), independent of whether the
+    /// timestamp of that report ([`Self::last_real_report_ms`]) is known.
+    pub fn has_reported(&self, id: &ServiceId) -> bool {
+        self.reported.contains(id)
     }
 
     /// Records that `id` is alive as of `now_ms`, resetting it to
@@ -187,9 +219,12 @@ impl LivenessMachine {
     /// `touch`ed or reappears in a `tick`'s `statuses`). Also invalidates
     /// any action already tagged with `id`'s generation: [`Self::
     /// generation`] returns `None` for an untracked id, which never
-    /// equals a previously tagged `Some(_)`.
+    /// equals a previously tagged `Some(_)`. Also clears [`Self::
+    /// has_reported`]'s presence flag for `id`, so a removed-then-recreated
+    /// service starts fresh rather than inheriting a stale "has reported".
     pub fn remove(&mut self, id: &ServiceId) {
         self.services.remove(id);
+        self.reported.remove(id);
     }
 
     /// `id`'s current generation counter (`None` if untracked) — see
@@ -224,6 +259,11 @@ impl LivenessMachine {
         statuses: &std::collections::HashMap<ServiceId, ServiceStatus>,
     ) -> Vec<Action> {
         self.services.retain(|id, _| statuses.contains_key(id));
+        // Same reconciliation as `services` above, for the same reason
+        // (`Self::remove`'s own doc): a service no longer configured must
+        // not keep a stale "has reported" flag if it is later re-added
+        // under the same id.
+        self.reported.retain(|id| statuses.contains_key(id));
         for id in statuses.keys() {
             self.services
                 .entry(id.clone())
@@ -711,5 +751,82 @@ mod tests {
             crate::unread::ServiceStatus::Ok { count: 1 },
         )]);
         assert!(machine.tick(165_000, &statuses).is_empty());
+    }
+
+    // --- report presence, independent of the clock (review finding) ------
+
+    #[test]
+    fn has_reported_is_false_for_an_untracked_service() {
+        let machine = LivenessMachine::new();
+        assert!(!machine.has_reported(&id("gmail")));
+    }
+
+    #[test]
+    fn mark_reported_sets_has_reported_for_a_previously_unknown_service() {
+        // `mark_reported` alone (no `tick`, no `touch`) must be enough:
+        // this is the whole point of separating presence from the
+        // clock-backed timestamp.
+        let mut machine = LivenessMachine::new();
+        machine.mark_reported(&id("gmail"));
+        assert!(machine.has_reported(&id("gmail")));
+    }
+
+    #[test]
+    fn mark_reported_does_not_set_a_report_timestamp() {
+        // Presence and timestamp are deliberately independent: marking
+        // presence alone must not fabricate a `last_real_report_ms`.
+        let mut machine = LivenessMachine::new();
+        machine.mark_reported(&id("gmail"));
+        assert_eq!(machine.last_real_report_ms(&id("gmail")), None);
+    }
+
+    #[test]
+    fn mark_reported_is_idempotent() {
+        let mut machine = LivenessMachine::new();
+        machine.mark_reported(&id("gmail"));
+        machine.mark_reported(&id("gmail"));
+        assert!(machine.has_reported(&id("gmail")));
+    }
+
+    #[test]
+    fn touch_alone_does_not_set_has_reported() {
+        // `touch` and `mark_reported` are separate calls in production
+        // (`LivenessRuntime::record_report` calls both) — `touch` by
+        // itself must not silently set the presence flag too, or a test
+        // relying on `touch` alone could hide a missing `mark_reported`
+        // call at the runtime layer.
+        let mut machine = LivenessMachine::new();
+        machine.touch(&id("gmail"), BASE);
+        assert!(!machine.has_reported(&id("gmail")));
+    }
+
+    #[test]
+    fn remove_clears_has_reported() {
+        let mut machine = LivenessMachine::new();
+        machine.mark_reported(&id("gmail"));
+        assert!(machine.has_reported(&id("gmail")));
+
+        machine.remove(&id("gmail"));
+        assert!(!machine.has_reported(&id("gmail")));
+    }
+
+    #[test]
+    fn tick_clears_has_reported_for_a_service_no_longer_in_statuses() {
+        let mut machine = LivenessMachine::new();
+        machine.mark_reported(&id("gmail"));
+        assert!(machine.has_reported(&id("gmail")));
+
+        let empty = HashMap::new();
+        machine.tick(BASE, &empty);
+        assert!(!machine.has_reported(&id("gmail")));
+    }
+
+    #[test]
+    fn tick_keeps_has_reported_for_a_service_still_present_in_statuses() {
+        let mut machine = LivenessMachine::new();
+        machine.mark_reported(&id("gmail"));
+        let s = statuses(&[("gmail", ServiceStatus::Loading)]);
+        machine.tick(BASE, &s);
+        assert!(machine.has_reported(&id("gmail")));
     }
 }
