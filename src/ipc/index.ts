@@ -19,6 +19,8 @@ export type {
   ServicePatchInput,
   SettingsPatchInput,
   CommandError,
+  ServiceDiagnostic,
+  Diagnostics,
 } from "./types";
 export { toCommandError } from "./errors";
 import type {

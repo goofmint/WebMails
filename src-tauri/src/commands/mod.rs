@@ -1,7 +1,7 @@
-//! The nine app commands the `shell` and `settings` webviews call (design.md
-//! §2.2.12; Task 1.9): `get_snapshot`, `add_service`, `update_service`,
-//! `remove_service`, `reorder_services`, `select_service`,
-//! `update_settings`, `open_settings`, `reload_service`.
+//! The ten app commands the `shell` and `settings` webviews call (design.md
+//! §2.2.12; Task 1.9, extended by Task 3.3): `get_snapshot`, `add_service`,
+//! `update_service`, `remove_service`, `reorder_services`, `select_service`,
+//! `update_settings`, `open_settings`, `reload_service`, `get_diagnostics`.
 //!
 //! Every command here does the minimum needed to type-check its IPC
 //! boundary — parse/validate the input, call one [`crate::services::
@@ -11,10 +11,8 @@
 //! end to end (Task 1.8). No command here talks to `config`, `state` or
 //! `host` directly.
 //!
-//! `set_icon_override`, `refresh_icon`, `get_diagnostics` and the
-//! `status-changed` event (design.md §2.2.12's remaining rows) are out of
-//! scope for this task — so is the `shell`/settings frontend UI that would
-//! call any of this (Task 1.10, 1.12).
+//! `set_icon_override`, `refresh_icon` and the `status-changed` event
+//! (design.md §2.2.12's remaining rows) are still out of scope.
 //!
 //! [`COMMAND_NAMES`] is the single list every one of these three has to
 //! agree with: `build.rs`'s `AppManifest::commands(&[...])` (which is what
@@ -25,9 +23,11 @@
 //! test, below, since a build script cannot depend on the crate it
 //! builds).
 
+mod diagnostics;
 mod dto;
 mod snapshot;
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
@@ -37,8 +37,11 @@ use crate::config::{IconSource, ProfileName, ServiceConfig, ServiceId, Settings}
 use crate::error::AppError;
 use crate::host::layout::SIDEBAR_WIDTH;
 use crate::icons::IconOverride;
+use crate::liveness::LivenessRuntime;
 use crate::services::ServiceManager;
 
+use diagnostics::build_diagnostics;
+pub use diagnostics::DiagnosticsDto;
 use dto::{ServicePatchDto, SettingsPatchDto};
 use snapshot::build_snapshot;
 pub use snapshot::SnapshotDto;
@@ -47,7 +50,7 @@ pub use snapshot::SnapshotDto;
 /// `tauri::generate_handler!` lists them — see the module doc comment for
 /// why this list exists and what else has to match it. Only referenced
 /// from this module's own `#[cfg(test)]` (the `shell.json` cross-check
-/// below); `build.rs` and `lib.rs` each spell the same nine names out
+/// below); `build.rs` and `lib.rs` each spell the same ten names out
 /// separately, since a build script cannot depend on the crate it builds
 /// and `generate_handler!` needs a literal list, not a runtime slice.
 #[allow(dead_code)]
@@ -63,6 +66,7 @@ pub const COMMAND_NAMES: &[&str] = &[
     "reload_service",
     "set_icon_override",
     "refresh_icon",
+    "get_diagnostics",
 ];
 
 /// The webview label `open_settings` creates/focuses its window under
@@ -243,6 +247,74 @@ pub async fn refresh_icon(
     // resolution replaces it, and a failed one leaves it as it was.
     ServiceManager::spawn_icon_resolve(&manager, id, icon_source);
     Ok(())
+}
+
+/// Returns per-configured-service diagnostics (design.md §2.2.12, §9.4):
+/// current status, staleness count and last-stale time, and last-report
+/// age. `services/diagnostics.rs`'s `build_diagnostics` does the actual
+/// assembly, purely, from this command's already-resolved inputs.
+///
+/// The liveness runtime is looked up via `try_state`, not the `State`
+/// extractor — like `agent_bridge::report_unread` — since it is
+/// legitimately absent when startup failed to open `state.json`
+/// (`ServiceManager::diagnostics_snapshot` then also returns an empty
+/// `services` list, so there is nothing to look up ages for anyway).
+/// `now_ms` and every per-service last-report time are read through that
+/// same runtime's injected [`crate::liveness::Clock`] — never
+/// `SystemTime::now()` directly — and a clock failure produces `None`
+/// (`build_diagnostics` then reports every age as `null`, never a
+/// fabricated value: project rule, no fallback defaults). `hasReported`,
+/// by contrast, comes from `LivenessRuntime::report_snapshot`'s presence
+/// flag — set unconditionally by `record_report`, independent of this
+/// clock — so it stays `true` even for a service whose report timestamp is
+/// unavailable because a clock read failed.
+///
+/// `report_snapshot` reads presence and timestamp for every service
+/// together, under one machine lock (task 3.3 review, finding 1), rather
+/// than this command calling two separate locked accessors — which could
+/// otherwise observe a report landing in between and desync the two
+/// fields for the same row.
+#[tauri::command]
+pub async fn get_diagnostics(
+    app: AppHandle,
+    manager: State<'_, Arc<ServiceManager>>,
+) -> Result<DiagnosticsDto, AppError> {
+    let snapshot = manager.diagnostics_snapshot().await?;
+    let liveness = app.try_state::<Arc<LivenessRuntime>>();
+
+    let now_ms = liveness
+        .as_deref()
+        .and_then(|liveness| liveness.now_ms().ok());
+    let report_snapshot = liveness
+        .as_deref()
+        .map(|liveness| liveness.report_snapshot(snapshot.services.iter().map(|s| &s.id)));
+    let (reported, last_report_ms): (HashSet<ServiceId>, HashMap<ServiceId, u64>) =
+        match &report_snapshot {
+            Some(statuses) => {
+                let reported = statuses
+                    .iter()
+                    .filter(|(_, status)| status.has_reported)
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                let last_report_ms = statuses
+                    .iter()
+                    .filter_map(|(id, status)| {
+                        status.last_real_report_ms.map(|ms| (id.clone(), ms))
+                    })
+                    .collect();
+                (reported, last_report_ms)
+            }
+            None => (HashSet::new(), HashMap::new()),
+        };
+
+    Ok(build_diagnostics(
+        &snapshot.services,
+        &snapshot.statuses,
+        &snapshot.staleness,
+        &reported,
+        &last_report_ms,
+        now_ms,
+    ))
 }
 
 #[cfg(test)]

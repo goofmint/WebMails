@@ -27,4 +27,4 @@ mod runtime;
 pub use machine::{
     Action, LivenessMachine, GRACE, MISSED_REPORTS_THRESHOLD, TICK, TICKS_AFTER_RELOAD,
 };
-pub use runtime::{Clock, LivenessRuntime, SystemClock};
+pub use runtime::{Clock, LivenessRuntime, ReportStatus, SystemClock};

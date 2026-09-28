@@ -15,6 +15,7 @@
     "allow-reload-service",
     "allow-set-icon-override",
     "allow-refresh-icon",
+    "allow-get-diagnostics",
     "core:event:default",
     "core:window:allow-set-focus"
   ]

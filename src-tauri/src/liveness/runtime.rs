@@ -4,7 +4,7 @@
 //! through [`ServiceManager`], the shared `unread::StatusStore`, and
 //! [`StateStore`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::{Arc, Mutex as SyncMutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -175,18 +175,28 @@ fn is_current(tagged: &Tagged, current_generation: Option<u64>) -> bool {
     current_generation == Some(tagged.generation)
 }
 
-/// Whether a freshly received report's `now_ms` should replace `existing`
-/// (`state.staleness[id].last_at`): only if there was no previous value,
-/// or the new one is not older (design.md §2.2.2) — reports can arrive
-/// out of order (e.g. two concurrent `report_unread` calls), and letting
-/// an earlier one overwrite a later one would make a service look staler
-/// than it actually is. Pure, unit-tested directly below;
-/// [`LivenessRuntime::record_report`] is its only production caller.
+/// Whether a freshly decided stale episode's `now_ms` should replace
+/// `existing` (`state.staleness[id].last_at` — the time `count` was last
+/// incremented, design.md §2.2.2, §9.4; not a report time, see
+/// [`StalenessStats::last_at`]'s own doc): only if there was no previous
+/// value, or the new one is not older. Pure, unit-tested directly below;
+/// [`LivenessRuntime::apply_mark_stale`] is its only production caller.
 fn is_newer_last_at(now_ms: u64, existing: Option<u64>) -> bool {
     match existing {
         None => true,
         Some(existing) => now_ms >= existing,
     }
+}
+
+/// [`LivenessRuntime::report_snapshot`]'s per-service result: presence and
+/// timestamp read together under one machine lock — see that method's own
+/// doc for why that atomicity matters. Same fields, same meaning, as
+/// [`LivenessMachine::has_reported`]/[`LivenessMachine::
+/// last_real_report_ms`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReportStatus {
+    pub has_reported: bool,
+    pub last_real_report_ms: Option<u64>,
 }
 
 /// Runs the 30s liveness tick loop (design.md §2.2.8, SPEC.md §9.4) and
@@ -248,9 +258,22 @@ impl LivenessRuntime {
 
     async fn tick_once(&self) {
         let snapshot = self.service_manager.snapshot().await;
+        // The presence half of `hasReported` is reconciled against what is
+        // actually configured, not `snapshot.statuses` — see
+        // `LivenessMachine::reconcile_reported`'s own doc (review finding
+        // 3): a service's `statuses` entry can be transiently absent while
+        // it is still very much configured, and reconciling presence
+        // against it would erase a just-recorded report for no reason
+        // connected to config.
+        let configured_ids: HashSet<ServiceId> = snapshot
+            .services
+            .iter()
+            .map(|service| service.id.clone())
+            .collect();
 
         let tagged_actions = {
             let mut machine = self.lock_machine();
+            machine.reconcile_reported(&configured_ids);
             let actions = evaluate_tick(self.clock.as_ref(), &mut machine, &snapshot.statuses);
             tag_actions(&machine, actions)
         };
@@ -310,48 +333,97 @@ impl LivenessRuntime {
             }
         });
 
+        // A fresh clock read for *this* stale episode's timestamp
+        // (`state.staleness[id].last_at`, task 3.3: "the time count was
+        // last incremented" — see `StalenessStats::last_at`'s own doc).
+        // `count` is incremented unconditionally: it is a plain tally, not
+        // a fabricated value, so a transient clock failure (logged below,
+        // never a made-up timestamp — project rule: no fallback defaults)
+        // must not suppress it.
+        let now_result = self.clock.now_ms();
+        let now_ms = now_result.as_ref().ok().copied();
         if let Err(err) = self.state.update(|state| {
             let stats = state.staleness.entry(id.clone()).or_insert(StalenessStats {
                 count: 0,
                 last_at: None,
             });
             stats.count += 1;
+            if let Some(now_ms) = now_ms {
+                if is_newer_last_at(now_ms, stats.last_at) {
+                    stats.last_at = Some(now_ms);
+                }
+            }
         }) {
             tracing::error!(service_id = %id, "liveness: failed to record staleness count: {err}");
+        }
+        if let Err(err) = now_result {
+            tracing::error!(service_id = %id, "liveness: clock unavailable, staleness count incremented without a timestamp: {err}");
         }
     }
 
     /// Records that `id` is alive as of now: resets the liveness state
-    /// machine's tracking for `id` and updates `state.staleness[id].
-    /// last_at` (design.md §2.2.2, §2.2.6). Called by
+    /// machine's tracking for `id` (design.md §2.2.6). Called by
     /// `agent_bridge::report_unread` immediately after a report validates
     /// — the design's "liveness uses the time Rust receives the report",
     /// using this runtime's own [`Clock`] rather than the report's
-    /// `observedAt`.
+    /// `observedAt`. Never touches `state.staleness[id].last_at` — that
+    /// field tracks stale episodes only (see [`Self::apply_mark_stale`],
+    /// `crate::state::StalenessStats::last_at`'s own doc); a service's
+    /// last *report* time lives only in the in-memory liveness machine
+    /// ([`Self::last_real_report_ms`]), never persisted.
+    ///
+    /// [`LivenessMachine::mark_reported`] is recorded first, *before*
+    /// [`evaluate_touch`] is even attempted: the presence half of "has
+    /// this service reported" (task 3.3's `get_diagnostics`'s
+    /// `hasReported`) must not depend on the clock read `evaluate_touch`
+    /// needs, so a clock failure there still leaves this call's report
+    /// counted as received — only its timestamp
+    /// ([`Self::last_real_report_ms`]) is then unavailable.
     pub fn record_report(&self, id: &ServiceId) {
-        let now_ms = {
-            let mut machine = self.lock_machine();
-            evaluate_touch(self.clock.as_ref(), &mut machine, id)
-        };
-        let Some(now_ms) = now_ms else {
-            // The clock errored: `evaluate_touch` already logged it, and
-            // already left `machine` untouched. Skipping the `state`
-            // update too is the same "no fallback time" rule applied to
-            // `last_at` (project rule: no fallback defaults).
-            return;
-        };
+        let mut machine = self.lock_machine();
+        machine.mark_reported(id);
+        evaluate_touch(self.clock.as_ref(), &mut machine, id);
+    }
 
-        if let Err(err) = self.state.update(|state| {
-            let stats = state.staleness.entry(id.clone()).or_insert(StalenessStats {
-                count: 0,
-                last_at: None,
-            });
-            if is_newer_last_at(now_ms, stats.last_at) {
-                stats.last_at = Some(now_ms);
-            }
-        }) {
-            tracing::error!(service_id = %id, "liveness: failed to record last report time: {err}");
-        }
+    /// The current time from this runtime's own [`Clock`] (task 3.3's
+    /// `get_diagnostics`: the same clock source [`Self::tick_once`] and
+    /// [`Self::record_report`] already use — never `SystemTime::now()`
+    /// directly, project rule).
+    pub fn now_ms(&self) -> Result<u64, ClockError> {
+        self.clock.now_ms()
+    }
+
+    /// Snapshots [`LivenessMachine::has_reported`] and [`LivenessMachine::
+    /// last_real_report_ms`] together, for every id in `ids`, all read
+    /// under one lock of the liveness machine (task 3.3 review, finding 1:
+    /// calling those as two separate locked accessors could observe a
+    /// report landing in between — `mark_reported` sets presence before
+    /// `evaluate_touch` even runs, see [`Self::record_report`] — and read
+    /// `has_reported` from before that report and `last_real_report_ms`
+    /// from after it, or vice versa, producing an inconsistent row).
+    /// `commands::get_diagnostics` is the only production caller. Same
+    /// contract as the two accessors this replaces: `has_reported` stays
+    /// `true` independent of the clock; `last_real_report_ms` (hence
+    /// `lastReportAgeMs`) is `None` whenever that report's own timestamp is
+    /// unavailable (a clock failure, or [`LivenessMachine::mark_reported`]
+    /// clearing a stale one ahead of a new report's `touch` — see that
+    /// method's own doc).
+    pub fn report_snapshot<'a>(
+        &self,
+        ids: impl IntoIterator<Item = &'a ServiceId>,
+    ) -> HashMap<ServiceId, ReportStatus> {
+        let machine = self.lock_machine();
+        ids.into_iter()
+            .map(|id| {
+                (
+                    id.clone(),
+                    ReportStatus {
+                        has_reported: machine.has_reported(id),
+                        last_real_report_ms: machine.last_real_report_ms(id),
+                    },
+                )
+            })
+            .collect()
     }
 
     /// Recovers from a poisoned lock the same way `ServiceManager::
@@ -602,5 +674,161 @@ mod tests {
     #[test]
     fn is_newer_last_at_false_for_an_earlier_time() {
         assert!(!is_newer_last_at(999, Some(1_000)));
+    }
+
+    // --- record_report: presence independent of the clock (review finding) -
+
+    /// Reproduces [`LivenessRuntime::record_report`]'s own body exactly
+    /// (`mark_reported` first, then `evaluate_touch`) against the two
+    /// pieces that body actually is — [`LivenessMachine::mark_reported`]
+    /// and [`evaluate_touch`] — since building a real [`LivenessRuntime`]
+    /// needs a live `AppHandle`/`ServiceManager`/`StateStore` this module's
+    /// other tests avoid entirely.
+    fn record_report_sequence(clock: &dyn Clock, machine: &mut LivenessMachine, id: &ServiceId) {
+        machine.mark_reported(id);
+        evaluate_touch(clock, machine, id);
+    }
+
+    #[test]
+    fn record_report_marks_has_reported_even_when_the_clock_fails() {
+        let mut machine = LivenessMachine::new();
+        record_report_sequence(&FailingClock, &mut machine, &id("gmail"));
+
+        // Presence survives the clock failure ...
+        assert!(machine.has_reported(&id("gmail")));
+        // ... but the timestamp does not: `get_diagnostics` must report a
+        // `null` age for this service, not a fabricated one.
+        assert_eq!(machine.last_real_report_ms(&id("gmail")), None);
+    }
+
+    #[test]
+    fn record_report_normal_path_sets_both_presence_and_the_timestamp() {
+        let mut machine = LivenessMachine::new();
+        record_report_sequence(&FixedClock(42), &mut machine, &id("gmail"));
+
+        assert!(machine.has_reported(&id("gmail")));
+        assert_eq!(machine.last_real_report_ms(&id("gmail")), Some(42));
+    }
+
+    #[test]
+    fn a_second_record_report_with_a_failing_clock_does_not_leave_a_stale_timestamp() {
+        // Review finding 2, exercised through the full `record_report`
+        // sequence: a first report lands normally, then a second one
+        // arrives while the clock is down. The second report's presence
+        // must still register, and the FIRST report's now-stale timestamp
+        // must not keep sitting there looking like a fresh age.
+        let mut machine = LivenessMachine::new();
+        record_report_sequence(&FixedClock(1_000), &mut machine, &id("gmail"));
+        assert_eq!(machine.last_real_report_ms(&id("gmail")), Some(1_000));
+
+        record_report_sequence(&FailingClock, &mut machine, &id("gmail"));
+        assert!(machine.has_reported(&id("gmail")));
+        assert_eq!(machine.last_real_report_ms(&id("gmail")), None);
+    }
+
+    // --- report_snapshot: one lock for presence + timestamp (finding 1) ---
+
+    /// Reproduces [`LivenessRuntime::report_snapshot`]'s own body against
+    /// [`LivenessMachine`] directly, for the same reason
+    /// `record_report_sequence` does.
+    fn report_snapshot_sequence(
+        machine: &LivenessMachine,
+        ids: &[ServiceId],
+    ) -> HashMap<ServiceId, super::ReportStatus> {
+        ids.iter()
+            .map(|id| {
+                (
+                    id.clone(),
+                    super::ReportStatus {
+                        has_reported: machine.has_reported(id),
+                        last_real_report_ms: machine.last_real_report_ms(id),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn report_snapshot_is_empty_shaped_for_an_untracked_service() {
+        let machine = LivenessMachine::new();
+        let snapshot = report_snapshot_sequence(&machine, &[id("gmail")]);
+        let status = snapshot.get(&id("gmail")).expect("row present");
+        assert!(!status.has_reported);
+        assert_eq!(status.last_real_report_ms, None);
+    }
+
+    #[test]
+    fn report_snapshot_reflects_a_normal_report_consistently() {
+        let mut machine = LivenessMachine::new();
+        record_report_sequence(&FixedClock(42), &mut machine, &id("gmail"));
+
+        let snapshot = report_snapshot_sequence(&machine, &[id("gmail")]);
+        let status = snapshot.get(&id("gmail")).expect("row present");
+        assert!(status.has_reported);
+        assert_eq!(status.last_real_report_ms, Some(42));
+    }
+
+    #[test]
+    fn report_snapshot_reflects_has_reported_true_with_a_null_timestamp_after_a_clock_failure() {
+        let mut machine = LivenessMachine::new();
+        record_report_sequence(&FailingClock, &mut machine, &id("gmail"));
+
+        let snapshot = report_snapshot_sequence(&machine, &[id("gmail")]);
+        let status = snapshot.get(&id("gmail")).expect("row present");
+        assert!(status.has_reported);
+        assert_eq!(status.last_real_report_ms, None);
+    }
+
+    #[test]
+    fn report_snapshot_covers_every_requested_id_independently() {
+        let mut machine = LivenessMachine::new();
+        record_report_sequence(&FixedClock(1), &mut machine, &id("gmail"));
+        // "icloud" is never reported at all.
+
+        let snapshot = report_snapshot_sequence(&machine, &[id("gmail"), id("icloud")]);
+        assert!(
+            snapshot
+                .get(&id("gmail"))
+                .expect("row present")
+                .has_reported
+        );
+        assert!(
+            !snapshot
+                .get(&id("icloud"))
+                .expect("row present")
+                .has_reported
+        );
+    }
+
+    // --- tick_once's reconcile_reported call (review finding 3) ----------
+
+    #[test]
+    fn tick_once_style_reconciliation_keeps_presence_configured_but_statusless() {
+        // Reproduces `tick_once`'s own sequence: `reconcile_reported`
+        // against configured ids, then `evaluate_tick` against `statuses`
+        // — run under the same lock, as `tick_once` does. A service that
+        // just called `record_report` but has no `statuses` entry yet
+        // (e.g. a snapshot captured just ahead of its first webview status
+        // write) must keep its presence.
+        let mut machine = LivenessMachine::new();
+        record_report_sequence(&FixedClock(1_000), &mut machine, &id("gmail"));
+
+        let configured = std::collections::HashSet::from([id("gmail")]);
+        machine.reconcile_reported(&configured);
+        let empty_statuses = statuses(&[]);
+        evaluate_tick(&FixedClock(1_000), &mut machine, &empty_statuses);
+
+        assert!(machine.has_reported(&id("gmail")));
+    }
+
+    #[test]
+    fn tick_once_style_reconciliation_clears_presence_for_a_deconfigured_service() {
+        let mut machine = LivenessMachine::new();
+        record_report_sequence(&FixedClock(1_000), &mut machine, &id("gmail"));
+
+        // "gmail" is no longer in the configured set at all.
+        machine.reconcile_reported(&std::collections::HashSet::new());
+
+        assert!(!machine.has_reported(&id("gmail")));
     }
 }
