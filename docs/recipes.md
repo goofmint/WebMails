@@ -571,6 +571,7 @@ rather than guessing.
 
    ```ts
    import type { Recipe, RecipeContext, RecipeDescription, UnreadResult } from "./types";
+   import { watchSelector } from "../strategies/selector";
    import { titleCount, watchTitle } from "../strategies/title";
 
    const HOST = "mail.example-mail.test";
@@ -608,23 +609,36 @@ rather than guessing.
        return Promise.resolve({ count: null });
      },
 
+     // `read()` depends on both the title and the mailbox marker, so watch
+     // both: the marker can appear or disappear (sign-in/sign-out) without
+     // the title changing.
      watch(ctx: RecipeContext, onChange: () => void): () => void {
-       return watchTitle(ctx.document, onChange);
+       const unwatchTitle = watchTitle(ctx.document, onChange);
+       const unwatchMailbox = watchSelector(ctx.document, MAILBOX_SELECTOR, onChange);
+       return () => {
+         unwatchTitle();
+         unwatchMailbox();
+       };
      },
    };
    ```
 
 2. **Register it** in `agent/recipes/registry.ts`: import `examplemail` and
    add it to `specificRecipes` (anywhere before `generic`, which stays
-   implicit and last).
+   implicit and last). Then update the exact expected order in
+   `agent/recipes/registry.test.ts` (the `toEqual([...])` list of recipe
+   ids) to include `"examplemail"` at the same position, still ending with
+   `"generic"`.
 
 3. **Add a test file**, `agent/recipes/examplemail.test.ts`, modeled on
-   `generic.test.ts` since this is a pure title-strategy recipe: `matches()`
+   `generic.test.ts` (title handling) and `selector.test.ts` (marker
+   observation): `matches()`
    against the real host and at least one look-alike host; `describe()`;
    `read()` for a title with a count, a title with none plus the mailbox
    element (→ `0`), and a title with none and no mailbox element, e.g. a
-   sign-in page (→ `null`); `watch()`
-   noticing a replaced `<title>` element and stopping after unsubscribe.
+   sign-in page (→ `null`); `watch()` noticing a replaced `<title>` element,
+   noticing the mailbox element being added and removed, and stopping both
+   after unsubscribe.
 
 4. **Run `pnpm test agent/recipes/examplemail`**, then the full suite
    (`pnpm test`), `pnpm lint`, and `pnpm typecheck`.
