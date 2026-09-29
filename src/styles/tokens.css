@@ -82,7 +82,9 @@
     --color-border-strong: #636366;
     --color-accent: #0a84ff;
     --color-accent-hover: #409cff;
-    --color-on-accent: #ffffff;
+    /* Black, not white: white on #0a84ff is ~3.6:1, below WCAG AA 4.5:1;
+       black is ~5.3:1 on the accent and ~7.4:1 on the hover colour. */
+    --color-on-accent: #000000;
     --color-danger: #ff453a;
     --color-danger-subtle: #3a1212;
     --color-success: #32d74b;
