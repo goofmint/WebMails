@@ -10,6 +10,7 @@ import { useShellState, useShellStore } from "../store/useShellStore";
 import { ServiceIcon } from "./ServiceIcon";
 import { ConfigErrorScreen } from "./ConfigErrorScreen";
 import { moveId } from "../lib/reorder";
+import { sidebarMetrics, sidebarMetricsVars } from "./sidebarMetrics";
 import "./sidebar.css";
 
 export function Sidebar() {
@@ -75,8 +76,10 @@ export function Sidebar() {
     setDropTargetId(null);
   }
 
+  const metrics = sidebarMetrics(snapshot.sidebarWidth);
+
   return (
-    <aside className="sidebar" aria-label="Services">
+    <aside className="sidebar" aria-label="Services" style={sidebarMetricsVars(metrics)}>
       <ul className="sidebar__list">
         {snapshot.services.map((service) => (
           <li key={service.id}>
@@ -84,7 +87,7 @@ export function Sidebar() {
               service={service}
               cachedIcon={snapshot.icons[service.id]}
               selected={service.id === selectedId}
-              size={snapshot.sidebarWidth}
+              size={metrics.iconSize}
               draggable
               isDropTarget={dropTargetId === service.id}
               status={snapshot.statuses[service.id]}

@@ -1,6 +1,12 @@
 /* Task 1.10 — shell webview layout (design.md §2.2.13). Icon sizing comes
    from an inline style driven by Snapshot.sidebarWidth (see
-   ServiceIcon.tsx), never a hard-coded pixel value here. */
+   ServiceIcon.tsx), never a hard-coded pixel value here.
+
+   Task #88: the `--sidebar-*` custom properties used throughout this file
+   are set inline on `.sidebar`/`.config-error-screen` from
+   `sidebarMetrics()`'s derived values (src/components/sidebarMetrics.ts),
+   never hard-coded here either. Colours come from `--color-sidebar-*`
+   tokens (src/styles/tokens.css), light/dark already handled there. */
 
 body {
   margin: 0;
@@ -15,16 +21,19 @@ body {
   height: 100vh;
   overflow-x: hidden;
   overflow-y: auto;
+  background: var(--color-sidebar-bg);
+  color: var(--color-sidebar-fg);
 }
 
 .sidebar__list {
   list-style: none;
   margin: 0;
-  padding: 0;
+  padding: var(--sidebar-list-padding) 0;
   width: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
+  gap: var(--sidebar-list-gap);
 }
 
 .sidebar__actions {
@@ -32,6 +41,8 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
+  gap: var(--sidebar-list-gap);
+  padding-bottom: var(--sidebar-list-padding);
 }
 
 .sidebar__error {
@@ -39,6 +50,39 @@ body {
   font-size: 12px;
   text-align: center;
   word-wrap: break-word;
+}
+
+/* Task #88: the "+" (add) and gear (settings) buttons, previously
+   unstyled and effectively invisible at the browser's default button
+   size. Sized from the same derived variables as the icons above them. */
+.sidebar__add-button,
+.sidebar__settings-button {
+  box-sizing: border-box;
+  width: var(--sidebar-action-size);
+  height: var(--sidebar-action-size);
+  margin: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-sidebar-fg);
+  font-size: var(--sidebar-action-glyph-size);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sidebar__add-button:hover,
+.sidebar__settings-button:hover {
+  background: var(--color-sidebar-hover-bg);
+}
+
+.sidebar__add-button:focus-visible,
+.sidebar__settings-button:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
 }
 
 .service-icon {
@@ -56,10 +100,12 @@ body {
 
 .service-icon--selected {
   outline: 2px solid currentColor;
+  outline-offset: 2px;
 }
 
 .service-icon--drop-target {
   outline: 2px dashed currentColor;
+  outline-offset: 2px;
 }
 
 .service-icon[draggable="true"] {
@@ -95,6 +141,8 @@ body {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  background: var(--color-sidebar-bg);
+  color: var(--color-sidebar-fg);
 }
 
 .config-error-screen__file,

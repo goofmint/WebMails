@@ -4,6 +4,7 @@ import { Sidebar } from "./Sidebar";
 import { ShellStoreProvider } from "../store/ShellStoreProvider";
 import { createMockShellIpc } from "../test/mockShellIpc";
 import { snapshot } from "../test/fixtures";
+import { sidebarMetrics } from "./sidebarMetrics";
 
 function renderSidebar(initialSnapshot = snapshot()) {
   const ipc = createMockShellIpc(initialSnapshot);
@@ -157,5 +158,62 @@ describe("Sidebar", () => {
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
 
     expect(ipc.openSettings).toHaveBeenCalledTimes(2);
+  });
+
+  it("sizes each ServiceIcon using sidebarMetrics's derived iconSize for the default sidebarWidth", async () => {
+    renderSidebar();
+    const gmail = await screen.findByRole("button", { name: "Gmail" });
+
+    const metrics = sidebarMetrics(64);
+    expect(gmail.style.width).toBe(`${metrics.iconSize}px`);
+    expect(gmail.style.height).toBe(`${metrics.iconSize}px`);
+  });
+
+  it("sizes each ServiceIcon using sidebarMetrics's derived iconSize for a non-default sidebarWidth", async () => {
+    renderSidebar(snapshot({ sidebarWidth: 80 }));
+    const gmail = await screen.findByRole("button", { name: "Gmail" });
+
+    const metrics = sidebarMetrics(80);
+    expect(gmail.style.width).toBe(`${metrics.iconSize}px`);
+    expect(gmail.style.height).toBe(`${metrics.iconSize}px`);
+  });
+
+  it("sets sidebarMetrics's derived CSS custom properties on the aside element", async () => {
+    renderSidebar();
+    await screen.findByRole("button", { name: "Gmail" });
+
+    const aside = screen.getByRole("complementary", { name: "Services" });
+    const metrics = sidebarMetrics(64);
+    expect(aside.style.getPropertyValue("--sidebar-icon-size")).toBe(`${metrics.iconSize}px`);
+    expect(aside.style.getPropertyValue("--sidebar-list-padding")).toBe(`${metrics.listPadding}px`);
+    expect(aside.style.getPropertyValue("--sidebar-list-gap")).toBe(`${metrics.listGap}px`);
+    expect(aside.style.getPropertyValue("--sidebar-action-size")).toBe(
+      `${metrics.actionButtonSize}px`,
+    );
+    expect(aside.style.getPropertyValue("--sidebar-action-glyph-size")).toBe(
+      `${metrics.actionGlyphSize}px`,
+    );
+  });
+
+  it("sets sidebarMetrics's derived CSS custom properties on the config error screen's root", async () => {
+    const errorSnapshot = snapshot({
+      services: [],
+      settings: null,
+      configError: {
+        file: "/tmp/eluma/config.toml",
+        key: null,
+        reason: "invalid scheme",
+      },
+    });
+    renderSidebar(errorSnapshot);
+    await screen.findByText("/tmp/eluma/config.toml");
+
+    const root = document.querySelector<HTMLElement>(".config-error-screen");
+    expect(root).not.toBeNull();
+    const metrics = sidebarMetrics(64);
+    expect(root?.style.getPropertyValue("--sidebar-icon-size")).toBe(`${metrics.iconSize}px`);
+    expect(root?.style.getPropertyValue("--sidebar-action-size")).toBe(
+      `${metrics.actionButtonSize}px`,
+    );
   });
 });

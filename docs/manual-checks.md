@@ -70,6 +70,7 @@ For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/
 For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/fail, with notes) before checking it off.
 
 - [ ] Drag-and-drop reorder works in the real shell (macOS/Windows)
+- [ ] Task #88: service icons are visibly inset from the sidebar's edges (not filling it edge to edge), and the "+"/gear buttons at the bottom are clearly visible, sized, and clickable — in both light and dark mode (macOS/Windows)
 
 ### Task 1.12 — Settings window: service CRUD
 

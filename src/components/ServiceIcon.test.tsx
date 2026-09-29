@@ -176,6 +176,26 @@ describe("ServiceIcon", () => {
     expect(button.querySelector(".service-icon__initial")?.textContent).toBe("G");
   });
 
+  it("sizes its button inline from the size prop", () => {
+    render(
+      <ServiceIcon
+        service={service({ id: "gmail", name: "Gmail" })}
+        cachedIcon={undefined}
+        selected={false}
+        size={40}
+        draggable={false}
+        isDropTarget={false}
+        status={undefined}
+        badgesEnabled={true}
+        {...handlers}
+      />,
+    );
+
+    const button = screen.getByRole("button", { name: "Gmail" });
+    expect(button.style.width).toBe("40px");
+    expect(button.style.height).toBe("40px");
+  });
+
   it("gives the letter icon a deterministic background colour derived from the service id", () => {
     render(
       <ServiceIcon
