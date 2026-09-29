@@ -362,7 +362,7 @@
 
 .recipe-panel__details {
   display: grid;
-  grid-template-columns: 120px 1fr;
+  grid-template-columns: 120px minmax(0, 1fr);
   gap: var(--space-1) var(--space-3);
   margin: 0;
 }
@@ -394,6 +394,11 @@
 
 .recipe-panel__field dd {
   margin: 0;
+  min-width: 0;
+}
+
+.recipe-panel__field dd code {
+  overflow-wrap: anywhere;
 }
 
 /* Diagnostics */
