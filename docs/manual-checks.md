@@ -102,6 +102,17 @@ For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/
 
 - [ ] Editing a global setting (e.g. the reconcile interval) in the settings window's global settings form, saving, then reopening `config.toml` in a text editor shows the new value with the rest of the file's comments and formatting intact (macOS/Windows) — the automated equivalent is `src-tauri/src/config/store.rs`'s `update_settings_*` tests (Task 1.3/1.13); this item is the real-file confirmation
 
+### Issue #89 — Settings window design
+
+`src/styles/tokens.css`'s light/dark values and `src/settings/settings.css`'s layout can only be confirmed against a real OS theme and a real window — this is not exercised by the jsdom-based component tests. For each item, record date, platform and result (pass/fail, with notes) before checking it off.
+
+- [ ] With the OS set to light mode, the settings window shows the light token values (light background, dark text, light section cards) (macOS)
+- [ ] With the OS set to dark mode, the settings window switches to the dark token values with no unstyled (white-flash) regions, and text/badges/buttons stay readable (WCAG AA-ish contrast) (macOS)
+- [ ] Same light/dark-follows-OS behaviour, Windows 11
+- [ ] Toggling the OS theme while the settings window is already open updates it live, with no reload needed (macOS/Windows 11)
+- [ ] Tabbing through the settings window (services list, Add service form, global settings form, recipe panel, diagnostics panel) shows a clearly visible focus outline on every button, input, checkbox and radio in turn, in a sensible order (macOS/Windows 11)
+- [ ] Resizing the settings window to a narrow width keeps every section readable: text wraps or truncates instead of overflowing the window, the diagnostics table scrolls horizontally instead of breaking the layout, and no control becomes unreachable (macOS/Windows 11)
+
 ## M2 — Unread
 
 Exit criterion (SPEC §16): N Gmail accounts plus iCloud show live counts while the window is in the background.

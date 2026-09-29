@@ -1,104 +1,455 @@
-/* Task 1.12 — settings window layout (design.md §2.2.13). */
-
-body {
-  margin: 0;
-}
+/*
+ * Task 1.12 — settings window layout (design.md §2.2.13).
+ * Redesigned for issue #89: a clean, native-feeling (macOS System
+ * Settings-like) look, with light/dark mode. Every colour below comes
+ * from a named custom property in `src/styles/tokens.css` — no hex
+ * colours live in this file.
+ */
 
 .settings {
   box-sizing: border-box;
-  padding: 16px;
-  font-family: sans-serif;
+  min-height: 100vh;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-base);
+  padding: var(--space-5) var(--space-4);
+}
+
+.settings--centered {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.settings__card {
+  width: 100%;
+  max-width: 480px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  padding: var(--space-4) var(--space-5);
+}
+
+.settings__card p {
+  margin: 0 0 var(--space-2);
+}
+
+.settings__card p:last-child {
+  margin-bottom: 0;
 }
 
 .settings__error {
-  color: #b00020;
+  color: var(--color-danger);
 }
+
+.settings > h1 {
+  max-width: 760px;
+  margin: 0 auto var(--space-4);
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+}
+
+/* Section cards */
+
+.settings-section {
+  max-width: 760px;
+  margin: 0 auto var(--space-5);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  padding: var(--space-4);
+}
+
+.settings-section__title {
+  margin: 0 0 var(--space-3);
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+}
+
+.settings-section__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.settings-section__header .settings-section__title {
+  margin-bottom: 0;
+}
+
+.add-service-form h2 {
+  font-size: var(--font-size-base);
+  font-weight: 600;
+  margin: var(--space-4) 0 var(--space-3);
+}
+
+/* Service list */
 
 .service-list {
   list-style: none;
-  margin: 0;
+  margin: 0 0 var(--space-4);
   padding: 0;
 }
 
 .service-list__item {
-  border-bottom: 1px solid #ddd;
-  padding: 8px 0;
+  border-bottom: 1px solid var(--color-border);
+  padding: var(--space-2) 0;
+}
+
+.service-list__item:last-child {
+  border-bottom: none;
 }
 
 .service-list__summary {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
+
+.service-list__name {
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.service-list__url {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-muted);
+}
+
+.service-list__empty {
+  color: var(--color-text-muted);
+  padding: var(--space-3) 0;
+}
+
+.edit-service-form,
+.delete-confirm {
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  margin: var(--space-2) 0 var(--space-2) var(--space-4);
+}
+
+.edit-service-form__notice {
+  font-size: var(--font-size-sm);
+  font-style: italic;
+  color: var(--color-text-muted);
+}
+
+.edit-service-form__actions,
+.delete-confirm__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+/*
+ * Form fields, scoped to `.settings`. Every text field in this codebase is
+ * a `<label htmlFor="...">` immediately followed by its `<input id="...">`
+ * sibling — selected here via `label[for]` — while every checkbox/radio is
+ * a `<label>` that *wraps* its `<input>` inline (no `for` attribute, since
+ * the association is implicit) — selected via `label:not([for])`. This
+ * tells the two apart without needing a wrapper element around either.
+ */
+
+.settings label[for] {
+  display: block;
+  margin: var(--space-3) 0 var(--space-1);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.settings input[type="text"],
+.settings input[type="number"],
+.settings select {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 360px;
+  height: 30px;
+  padding: 0 var(--space-2);
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: var(--font-size-base);
+}
+
+.settings input[type="text"]:disabled,
+.settings input[type="number"]:disabled,
+.settings select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.settings input[aria-invalid="true"],
+.settings select[aria-invalid="true"] {
+  border-color: var(--color-danger);
+}
+
+.settings label:not([for]):not(.profile-field__option) {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin: var(--space-2) 0;
+  cursor: pointer;
+}
+
+.settings input[type="checkbox"],
+.settings input[type="radio"] {
+  accent-color: var(--color-accent);
+  width: 14px;
+  height: 14px;
+}
+
+.settings form > button[type="submit"] {
+  margin-top: var(--space-3);
+}
+
+/* Profile field */
 
 .profile-field {
   border: none;
   padding: 0;
-  margin: 8px 0;
+  margin: var(--space-2) 0;
+}
+
+.profile-field legend {
+  padding: 0;
+  margin: 0 0 var(--space-1);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
 }
 
 .profile-field__option {
-  display: block;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin: var(--space-1) var(--space-3) var(--space-1) 0;
+  cursor: pointer;
+}
+
+.profile-field__named {
+  margin-top: var(--space-2);
 }
 
 .profile-field__error {
-  color: #b00020;
-  font-size: 12px;
-}
-
-.edit-service-form__notice {
-  font-size: 12px;
-  font-style: italic;
+  color: var(--color-danger);
+  font-size: var(--font-size-sm);
 }
 
 .global-settings-form__error {
-  color: #b00020;
-  font-size: 12px;
+  color: var(--color-danger);
+  font-size: var(--font-size-sm);
 }
 
 .global-settings-form__success {
-  color: #1a7a1a;
-  font-size: 12px;
+  color: var(--color-success);
+  font-size: var(--font-size-sm);
+}
+
+/*
+ * `role="alert"` error text is always a `<p>` in this codebase (the
+ * page-level loading/error/configError screens use `role="alert"` on a
+ * `<div>` instead, styled by `.settings__card` above, so this selector
+ * doesn't touch them).
+ */
+.settings p[role="alert"] {
+  color: var(--color-danger);
+  background: var(--color-danger-subtle);
+  border-left: 3px solid var(--color-danger);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  margin: var(--space-2) 0;
+  font-size: var(--font-size-sm);
+}
+
+/* Buttons */
+
+.settings button {
+  font: inherit;
+  font-size: var(--font-size-base);
+  height: 30px;
+  padding: 0 var(--space-3);
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.settings button:hover:not(:disabled) {
+  background: var(--color-surface-muted);
+}
+
+.settings button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.settings button.button--primary {
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  border-color: var(--color-accent);
+}
+
+.settings button.button--primary:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+}
+
+.settings button.button--danger {
+  background: var(--color-surface);
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+
+.settings button.button--danger:hover:not(:disabled) {
+  background: var(--color-danger-subtle);
+}
+
+.settings button:focus-visible,
+.settings input:focus-visible,
+.settings select:focus-visible,
+.settings summary:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+}
+
+/* Recipe panel */
+
+.recipe-panel__empty {
+  color: var(--color-text-muted);
+  padding: var(--space-2) 0;
+}
+
+.recipe-panel__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.recipe-panel__item {
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.recipe-panel__item:last-child {
+  border-bottom: none;
+}
+
+.recipe-panel__name {
+  margin: 0 0 var(--space-2);
+  font-size: var(--font-size-base);
+  font-weight: 600;
+}
+
+.recipe-panel__details {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+}
+
+/*
+ * `display: contents` drops each `.recipe-panel__field` wrapper div from
+ * the box tree so its `dt`/`dd` become direct grid items of the `<dl>`
+ * above — that's what turns the field list into a real 2-column grid
+ * instead of one column per div.
+ */
+.recipe-panel__field {
+  display: contents;
+}
+
+.recipe-panel__field dt,
+.recipe-panel__field dd {
+  padding-bottom: var(--space-1);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.recipe-panel__field:last-child dt,
+.recipe-panel__field:last-child dd {
+  border-bottom: none;
+}
+
+.recipe-panel__field dt {
+  color: var(--color-text-muted);
+}
+
+.recipe-panel__field dd {
+  margin: 0;
+}
+
+/* Diagnostics */
+
+.diagnostics__table-wrap {
+  overflow-x: auto;
 }
 
 .diagnostics__table {
   border-collapse: collapse;
   width: 100%;
+  font-size: var(--font-size-sm);
 }
 
 .diagnostics__table th,
 .diagnostics__table td {
-  border-bottom: 1px solid #ddd;
-  padding: 4px 8px;
+  border-bottom: 1px solid var(--color-border);
+  padding: var(--space-2) var(--space-3);
   text-align: left;
 }
 
+.diagnostics__table thead th {
+  background: var(--color-surface-muted);
+  font-weight: 600;
+}
+
+.diagnostics__table tbody tr:hover {
+  background: var(--color-surface-muted);
+}
+
+/* "Stale count" is the table's 4th column. */
+.diagnostics__table th:nth-child(4),
+.diagnostics__table td:nth-child(4) {
+  text-align: right;
+}
+
 .diagnostics__error {
-  color: #b00020;
+  color: var(--color-danger);
 }
 
 .diagnostics__badge {
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 12px;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
 }
 
 .diagnostics__badge--stale {
-  background: #e0e0e0;
-  color: #555;
+  background: var(--color-status-stale-bg);
+  color: var(--color-status-stale-fg);
 }
 
 .diagnostics__badge--needsAttention {
-  background: #fff3cd;
-  color: #7a5b00;
+  background: var(--color-status-needs-attention-bg);
+  color: var(--color-status-needs-attention-fg);
 }
 
 .diagnostics__badge--ok {
-  background: #e6f4ea;
-  color: #1e7e34;
+  background: var(--color-status-ok-bg);
+  color: var(--color-status-ok-fg);
 }
 
 .diagnostics__badge--loading {
-  background: #eee;
-  color: #888;
+  background: var(--color-status-loading-bg);
+  color: var(--color-status-loading-fg);
 }

@@ -86,16 +86,16 @@ export function SettingsApp({ ipc }: SettingsAppProps) {
 
   if (state.status === "loading") {
     return (
-      <div className="settings" data-testid="settings-loading">
-        Loading…
+      <div className="settings settings--centered" data-testid="settings-loading">
+        <div className="settings__card">Loading…</div>
       </div>
     );
   }
 
   if (state.status === "error") {
     return (
-      <div className="settings settings__error" role="alert">
-        {state.error.message}
+      <div className="settings settings--centered settings__error" role="alert">
+        <div className="settings__card">{state.error.message}</div>
       </div>
     );
   }
@@ -105,10 +105,12 @@ export function SettingsApp({ ipc }: SettingsAppProps) {
   if (snapshot.configError !== undefined) {
     const { configError } = snapshot;
     return (
-      <div className="settings settings__error" role="alert">
-        <p>{configError.file}</p>
-        {configError.key !== null && <p>{configError.key}</p>}
-        <p>{configError.reason}</p>
+      <div className="settings settings--centered settings__error" role="alert">
+        <div className="settings__card">
+          <p>{configError.file}</p>
+          {configError.key !== null && <p>{configError.key}</p>}
+          <p>{configError.reason}</p>
+        </div>
       </div>
     );
   }
@@ -116,8 +118,13 @@ export function SettingsApp({ ipc }: SettingsAppProps) {
   return (
     <div className="settings">
       <h1>Settings</h1>
-      <ServiceList ipc={ipc} services={snapshot.services} />
-      <AddServiceForm ipc={ipc} services={snapshot.services} />
+      <section className="settings-section" aria-labelledby="settings-services-heading">
+        <h2 id="settings-services-heading" className="settings-section__title">
+          Services
+        </h2>
+        <ServiceList ipc={ipc} services={snapshot.services} />
+        <AddServiceForm ipc={ipc} services={snapshot.services} />
+      </section>
       {snapshot.settings === null ? (
         // `settings` is only ever `null` alongside a `configError`
         // (design.md §2.2.12), and that case already returned above — this
