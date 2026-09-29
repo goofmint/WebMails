@@ -6,6 +6,7 @@
  */
 
 import type { ConfigErrorInfo } from "../ipc";
+import { sidebarMetrics, sidebarMetricsVars } from "./sidebarMetrics";
 
 export interface ConfigErrorScreenProps {
   readonly configError: ConfigErrorInfo;
@@ -23,9 +24,14 @@ export function ConfigErrorScreen({
     configError.key === null
       ? `${configError.file}\n${configError.reason}`
       : `${configError.file}\n${configError.key}\n${configError.reason}`;
+  const metrics = sidebarMetrics(sidebarWidth);
 
   return (
-    <div className="config-error-screen" style={{ width: sidebarWidth }} title={fullText}>
+    <div
+      className="config-error-screen"
+      style={{ width: sidebarWidth, ...sidebarMetricsVars(metrics) }}
+      title={fullText}
+    >
       <p className="config-error-screen__file">{configError.file}</p>
       {configError.key !== null && <p className="config-error-screen__key">{configError.key}</p>}
       <p className="config-error-screen__reason">{configError.reason}</p>
