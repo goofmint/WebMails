@@ -29,7 +29,10 @@ use crate::error::{AppError, AppResult};
 use crate::profile::ProfileBackend;
 
 use super::child_geometry::{self, PhysicalRect};
-use super::{apply_common_settings_window, service_label, Rect, ServiceWebviewSpec, WebviewHost};
+use super::{
+    apply_common_settings_window, apply_service_settings_window, service_label, Rect,
+    ServiceWebviewSpec, WebviewHost,
+};
 
 /// The label `ChildWindowHost`'s main `WebviewWindow` uses (design.md
 /// §2.2.4's fallback bullet: "main is a WebviewWindow hosting the
@@ -260,6 +263,7 @@ impl<B: ProfileBackend + Send + Sync> WebviewHost for ChildWindowHost<B> {
             .initialization_script(spec.init_script)
             .on_page_load(move |window, payload| on_page_load(window.as_ref().clone(), payload));
         let builder = apply_common_settings_window(builder);
+        let builder = apply_service_settings_window(builder);
         let builder = self.profile_backend.apply_window(builder, spec.profile);
 
         let window = builder.build().map_err(AppError::from)?;
