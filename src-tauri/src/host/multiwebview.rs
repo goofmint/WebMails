@@ -28,7 +28,9 @@ use crate::error::{AppError, AppResult};
 use crate::profile::ProfileBackend;
 
 use super::layout::{self, Rect};
-use super::{apply_common_settings, service_label, ServiceWebviewSpec, WebviewHost};
+use super::{
+    apply_common_settings, apply_service_settings, service_label, ServiceWebviewSpec, WebviewHost,
+};
 
 /// The label of the shell child webview (design.md §2.2.4).
 const SHELL_LABEL: &str = "shell";
@@ -166,6 +168,7 @@ impl<B: ProfileBackend + Send + Sync> WebviewHost for MultiwebviewHost<B> {
             .initialization_script(spec.init_script)
             .on_page_load(spec.on_page_load);
         let builder = apply_common_settings(builder);
+        let builder = apply_service_settings(builder);
         let builder = self.profile_backend.apply(builder, spec.profile);
 
         let webview = self

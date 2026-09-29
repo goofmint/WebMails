@@ -110,6 +110,20 @@ pub fn service_label(id: &ServiceId) -> String {
     format!("svc-{id}")
 }
 
+/// The user agent applied to every macOS service webview (Task #87).
+/// WKWebView's default UA carries no `Version/… Safari/…` token, so Gmail
+/// treats it as an unsupported browser and shows its "this browser
+/// version is no longer supported" page. WKWebView runs the same WebKit
+/// engine as Safari, so spoofing Safari's own UA is accurate rather than
+/// impersonating a different engine. Safari itself freezes the
+/// `10_15_7`/`605.1.15` tokens across releases — only `Version/` tracks
+/// the running Safari version (27.0 as of this task) — so bump `Version/`
+/// if a service starts rejecting this UA again. Applies to service
+/// webviews only; the shell and settings webviews keep WKWebView's
+/// default UA.
+#[cfg(target_os = "macos")]
+pub const SERVICE_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Safari/605.1.15";
+
 /// Windows browser arguments applied to *every* webview, shell included
 /// (design.md §2.2.4, §10; SPEC.md §9.2). Quoted verbatim from design.md
 /// §2.2.4.
@@ -172,6 +186,31 @@ pub fn apply_common_settings_window<'a, M: tauri::Manager<Wry>>(
         builder.background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled);
     #[cfg(windows)]
     let builder = builder.additional_browser_args(WEBVIEW2_ARGS);
+    builder
+}
+
+/// Applies [`SERVICE_USER_AGENT`] on macOS; returns `builder` unchanged
+/// everywhere else (Task #87). Service webviews only — never applied to
+/// the shell or the settings window.
+pub fn apply_service_settings(builder: WebviewBuilder<Wry>) -> WebviewBuilder<Wry> {
+    #[cfg(target_os = "macos")]
+    let builder = builder.user_agent(SERVICE_USER_AGENT);
+    builder
+}
+
+/// [`apply_service_settings`]'s `WebviewWindowBuilder` sibling, for
+/// [`ChildWindowHost`]'s per-service windows (Task #87), mirroring
+/// [`apply_common_settings_window`]'s cfg/feature gating and generic
+/// parameters.
+///
+/// Only reachable behind Cargo feature `host-child-windows`, so it is
+/// gated the same way rather than left for `#[allow(dead_code)]`.
+#[cfg(feature = "host-child-windows")]
+pub fn apply_service_settings_window<'a, M: tauri::Manager<Wry>>(
+    builder: tauri::webview::WebviewWindowBuilder<'a, Wry, M>,
+) -> tauri::webview::WebviewWindowBuilder<'a, Wry, M> {
+    #[cfg(target_os = "macos")]
+    let builder = builder.user_agent(SERVICE_USER_AGENT);
     builder
 }
 
@@ -245,5 +284,19 @@ mod tests {
     fn service_label_prefixes_with_svc_dash() {
         let id = ServiceId::new("gmail-personal").expect("valid service id");
         assert_eq!(service_label(&id), "svc-gmail-personal");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn service_user_agent_has_safari_shape() {
+        assert!(SERVICE_USER_AGENT.starts_with("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"));
+        assert!(SERVICE_USER_AGENT.contains("AppleWebKit/605.1.15"));
+        let version = SERVICE_USER_AGENT
+            .split("Version/")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .expect("a Version/<digits> token");
+        assert!(!version.is_empty() && version.chars().next().unwrap().is_ascii_digit());
+        assert!(SERVICE_USER_AGENT.ends_with("Safari/605.1.15"));
     }
 }

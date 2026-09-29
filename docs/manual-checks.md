@@ -134,6 +134,11 @@ Run these after Task 2.3 and Task 2.4 are both in place (a real service webview 
 - [ ] Record the exact `document.title` text Gmail uses once unread mail exceeds 1,000 (does it show the literal count, `"1,000+"`, or something else — this affects whether `GMAIL_TITLE_PATTERN` in `agent/recipes/gmail.ts` still matches)
 - [ ] Record whether the entry `<link>`'s `message_id` query parameter (used to build the `#all/<message_id>` deep link) is present and correctly clickable for every tested account — this parsing choice (agent/recipes/gmail.ts's `extractMessageId`) is inferred from the feed's known historical shape, not from current official documentation
 
+Task #87 (`SERVICE_USER_AGENT`, macOS only): for each item, record date, platform, account and result — if Gmail starts showing the unsupported-browser page again, bump `Version/` in `SERVICE_USER_AGENT` (`src-tauri/src/host/mod.rs`) to match the owner's current Safari version.
+
+- [ ] Signed into Gmail on the default host (`MultiwebviewHost`), the service webview loads the normal Gmail UI, not the "this browser version is no longer supported" page (macOS)
+- [ ] Same check built with `--features host-child-windows` (macOS)
+
 ## M3 — Background survival
 
 Exit criterion (SPEC §16): badges still correct after 2 hours minimised, on both platforms — or the Windows story is honestly documented as degraded.

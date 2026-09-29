@@ -250,6 +250,7 @@ pub struct ServiceWebviewSpec {
   - `initialization_script(agent)`, `on_page_load`, `on_navigation` (allow all; used only for logging)
   - `background_throttling(Disabled)` on macOS
   - `additional_browser_args(WEBVIEW2_ARGS)` on Windows
+  - `user_agent(SERVICE_USER_AGENT)` on macOS only (Task #87: WKWebView's default UA lacks `Version/… Safari/…`, which Gmail reads as an unsupported browser) — the shell and settings webviews keep WKWebView's default UA on every platform
   - the profile backend
 - **Windows browser arguments** are one constant, used for **every** webview, the shell included (§5.2, §9.2):
   `--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows`
