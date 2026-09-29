@@ -146,7 +146,7 @@ export function AddServiceForm({ ipc, services }: AddServiceFormProps) {
         </p>
       )}
 
-      <button type="submit" disabled={!canSubmit}>
+      <button type="submit" className="button--primary" disabled={!canSubmit}>
         Add
       </button>
     </form>

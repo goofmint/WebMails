@@ -144,11 +144,13 @@ export function DiagnosticsPanel() {
   }, [refresh]);
 
   return (
-    <section className="diagnostics">
-      <h2>Diagnostics</h2>
-      <button type="button" onClick={() => void refresh()}>
-        Refresh
-      </button>
+    <section className="diagnostics settings-section">
+      <div className="settings-section__header">
+        <h2 className="settings-section__title">Diagnostics</h2>
+        <button type="button" onClick={() => void refresh()}>
+          Refresh
+        </button>
+      </div>
       {state.status === "loading" && <p data-testid="diagnostics-loading">Loading…</p>}
       {state.status === "error" && (
         <p className="diagnostics__error" role="alert">
@@ -156,22 +158,24 @@ export function DiagnosticsPanel() {
         </p>
       )}
       {state.status === "ready" && (
-        <table className="diagnostics__table">
-          <thead>
-            <tr>
-              <th>Service</th>
-              <th>Status</th>
-              <th>Last report</th>
-              <th>Stale count</th>
-              <th>Last stale</th>
-            </tr>
-          </thead>
-          <tbody>
-            {state.diagnostics.services.map((row) => (
-              <DiagnosticsRow key={row.serviceId} row={row} />
-            ))}
-          </tbody>
-        </table>
+        <div className="diagnostics__table-wrap">
+          <table className="diagnostics__table">
+            <thead>
+              <tr>
+                <th>Service</th>
+                <th>Status</th>
+                <th>Last report</th>
+                <th>Stale count</th>
+                <th>Last stale</th>
+              </tr>
+            </thead>
+            <tbody>
+              {state.diagnostics.services.map((row) => (
+                <DiagnosticsRow key={row.serviceId} row={row} />
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </section>
   );

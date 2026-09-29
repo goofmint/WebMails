@@ -56,6 +56,7 @@ export function ServiceList({ ipc, services }: ServiceListProps) {
             </button>
             <button
               type="button"
+              className="button--danger"
               onClick={() => {
                 setDeletingId(service.id);
                 setEditingId(null);

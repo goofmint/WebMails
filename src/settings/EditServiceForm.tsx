@@ -142,7 +142,7 @@ export function EditServiceForm({
       )}
 
       <div className="edit-service-form__actions">
-        <button type="submit" disabled={!canSubmit}>
+        <button type="submit" className="button--primary" disabled={!canSubmit}>
           Save
         </button>
         <button type="button" onClick={onClose}>

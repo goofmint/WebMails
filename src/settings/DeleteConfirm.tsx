@@ -60,6 +60,7 @@ export function DeleteConfirm({ ipc, service, onClose }: DeleteConfirmProps) {
       <div className="delete-confirm__actions">
         <button
           type="button"
+          className="button--danger"
           disabled={submitting}
           onClick={() => {
             void handleConfirm();

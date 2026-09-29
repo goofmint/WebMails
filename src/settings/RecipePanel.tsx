@@ -18,8 +18,10 @@ export function RecipePanel({ services }: RecipePanelProps) {
   const rows = buildRecipeRows(services);
 
   return (
-    <section className="recipe-panel" aria-labelledby="recipe-panel-heading">
-      <h2 id="recipe-panel-heading">Recipes</h2>
+    <section className="recipe-panel settings-section" aria-labelledby="recipe-panel-heading">
+      <h2 id="recipe-panel-heading" className="settings-section__title">
+        Recipes
+      </h2>
       {rows.length === 0 ? (
         <p className="recipe-panel__empty">No services to show a recipe for.</p>
       ) : (

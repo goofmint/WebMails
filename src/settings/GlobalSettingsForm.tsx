@@ -137,13 +137,13 @@ export function GlobalSettingsForm({ ipc, settings }: GlobalSettingsFormProps) {
 
   return (
     <form
-      className="global-settings-form"
+      className="global-settings-form settings-section"
       aria-label="Global settings"
       onSubmit={(event) => {
         void handleSubmit(event);
       }}
     >
-      <h2>Global settings</h2>
+      <h2 className="settings-section__title">Global settings</h2>
 
       <label htmlFor="global-settings-reconcile-interval-seconds">
         Reconcile interval (seconds)
@@ -257,7 +257,7 @@ export function GlobalSettingsForm({ ipc, settings }: GlobalSettingsFormProps) {
         {justSaved && error === null ? "Saved." : ""}
       </p>
 
-      <button type="submit" disabled={!canSubmit}>
+      <button type="submit" className="button--primary" disabled={!canSubmit}>
         Save
       </button>
     </form>
