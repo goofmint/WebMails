@@ -1,9 +1,9 @@
 /* Task 2.10 — sidebar status indicators (design.md §2.2.13, §11.3).
    Absolutely positioned at the top-right of the icon that renders it; that
    ancestor (`.service-icon`) must be `position: relative` (see
-   sidebar.css), and every rule here is sized to fit inside the icon —
-   40px at the default 64px sidebarWidth (Task #88; see
-   src/components/sidebarMetrics.ts), not a hard-coded 64px. */
+   sidebar.css), and every rule here is sized to fit inside the 24px icon
+   at the default 52px sidebarWidth (Task #98; see
+   src/components/sidebarMetrics.ts), not a hard-coded pixel size. */
 
 .badge {
   position: absolute;

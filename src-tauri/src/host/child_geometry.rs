@@ -183,9 +183,9 @@ mod tests {
         assert_eq!(
             frame,
             Some(PhysicalRect {
-                x: 164,
+                x: 152,
                 y: 50,
-                width: 936,
+                width: 948,
                 height: 700,
             })
         );
@@ -199,9 +199,9 @@ mod tests {
         assert_eq!(
             frame,
             Some(PhysicalRect {
-                x: 328, // 200 + 64*2
+                x: 304, // 200 + 52*2
                 y: 100,
-                width: 1872, // 2000 - 128
+                width: 1896, // 2000 - 104
                 height: 1400,
             })
         );
@@ -217,9 +217,9 @@ mod tests {
         assert_eq!(
             frame,
             Some(PhysicalRect {
-                x: -436, // -500 + 64
+                x: -448, // -500 + 52
                 y: -300,
-                width: 936,
+                width: 948,
                 height: 700,
             })
         );
@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn parent_no_wider_than_sidebar_is_none() {
         // Exactly the physical sidebar width: zero content width.
-        assert_eq!(service_frame((0, 0), (64, 700), 1.0, &[], true), None);
+        assert_eq!(service_frame((0, 0), (52, 700), 1.0, &[], true), None);
         // Narrower still.
         assert_eq!(service_frame((0, 0), (10, 700), 1.0, &[], true), None);
     }
@@ -249,7 +249,7 @@ mod tests {
     fn parent_no_wider_than_sidebar_is_none_when_inactive_too() {
         let monitors = [monitor(0, 0, 1920, 1080)];
         assert_eq!(
-            service_frame((0, 0), (64, 700), 1.0, &monitors, false),
+            service_frame((0, 0), (52, 700), 1.0, &monitors, false),
             None
         );
     }
@@ -263,9 +263,9 @@ mod tests {
         assert_eq!(
             frame,
             Some(PhysicalRect {
-                x: -936, // 0 - content width (936)
+                x: -948, // 0 - content width (948)
                 y: 0,
-                width: 936,
+                width: 948,
                 height: 700,
             })
         );
@@ -282,9 +282,9 @@ mod tests {
         assert_eq!(
             frame,
             Some(PhysicalRect {
-                x: -936,
+                x: -948,
                 y: 0,
-                width: 936,
+                width: 948,
                 height: 700,
             })
         );
@@ -300,9 +300,9 @@ mod tests {
         assert_eq!(
             frame,
             Some(PhysicalRect {
-                x: -1920 - 936,
+                x: -1920 - 948,
                 y: 0,
-                width: 936,
+                width: 948,
                 height: 700,
             })
         );

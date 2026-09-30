@@ -254,7 +254,7 @@ pub struct ServiceWebviewSpec {
   - the profile backend
 - **Windows browser arguments** are one constant, used for **every** webview, the shell included (§5.2, §9.2):
   `--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows`
-- `SIDEBAR_WIDTH` is a single Rust constant (64px). The shell reads it from `get_snapshot`, so the width is not duplicated.
+- `SIDEBAR_WIDTH` is a single Rust constant (52px). The shell reads it from `get_snapshot`, so the width is not duplicated.
 - **Service webview new-window requests (Task #95):** every service `WebviewBuilder`/`WebviewWindowBuilder` also installs `on_new_window`, which classifies the requested URL (`host/new_window.rs`'s `classify`) against **that service's own configured URL** — not the page's current URL — into one of three outcomes:
   - **Same site:** the requested URL's registrable domain matches the configured URL's. Handled by navigating the existing service webview to it in place (`Webview::navigate`, via `tauri::async_runtime::spawn`). This is what lets Gmail's "Add another account" (`accounts.google.com`, a different host but the same registrable domain as `mail.google.com`) work in the same webview.
   - **Other `http`/`https`:** any other host. Opened in the OS default browser via `tauri_plugin_opener::open_url` on `tauri::async_runtime::spawn_blocking` — this crate's standalone function only, never the registered plugin (no `app.plugin(tauri_plugin_opener::init())` call, no opener entry in `capabilities/`). At most one launch per second per service (`EXTERNAL_OPEN_MIN_INTERVAL`); requests arriving sooner are dropped and logged, so a page looping `window.open` cannot flood the default browser.
@@ -414,8 +414,9 @@ Events sent to the shell: `services-changed`, `status-changed`, `select-service`
 
 #### 2.2.13 Shell UI (`src/`)
 
-- **Sidebar** (`shell` webview, 64px):
+- **Sidebar** (`shell` webview, 52px):
   - A vertical list of `ServiceIcon`s: icon, `Badge`, and the name in a tooltip.
+  - Icons are 24px, the "+"/gear action buttons are 40px, and the gap between icons is 12px (`src/components/sidebarMetrics.ts`).
   - HTML5 drag and drop reorders the list and calls `reorder_services`.
   - A "+" button at the bottom and a settings (gear) button both call `open_settings`.
 - **Badge rendering** (§11.3), when `badge_sidebar` is true:
@@ -702,7 +703,7 @@ page DOM/title ─(MutationObserver)─▶ recipe.read()
 ### Open points for owner review
 
 1. The App Nap activity option (above).
-2. Settings and service CRUD live in a **separate settings window**, not inside the 64px sidebar webview.
+2. Settings and service CRUD live in a **separate settings window**, not inside the 52px sidebar webview.
 3. `STARTUP_STAGGER` = 1500ms and fetch jitter = ±20% are internal constants, not config keys.
 4. Deleting an isolated service offers to delete its session data (a checkbox, off by default).
 5. The generic title recipe cannot detect a signed-out state on the same origin, so it reports `0` there, not `null`.

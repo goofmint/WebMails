@@ -16,14 +16,14 @@ Exit criterion (SPEC §16): two iCloud accounts signed in side by side; a URL be
 
 For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/fail, with notes) before checking it off.
 
-- [ ] The shell sidebar renders at exactly 64px wide, full window height, with no gap or overlap against the content area (macOS)
-- [ ] The shell sidebar renders at exactly 64px wide, full window height, with no gap or overlap against the content area (Windows 11)
+- [ ] The shell sidebar renders at exactly 52px wide, full window height, with no gap or overlap against the content area (macOS)
+- [ ] The shell sidebar renders at exactly 52px wide, full window height, with no gap or overlap against the content area (Windows 11)
 - [ ] With one service configured in `config.toml`, it is visible and interactive in the content area on launch (macOS) (Task 1.8 replaced the hard-coded `https://example.com` test service used to check this before `config.toml`-driven startup existed — use a real configured service now)
 - [ ] Same single-service startup rendering (Windows 11)
 - [ ] Drag-resizing the window relays out the shell and the active service with no stale geometry, gap or overlap (macOS)
 - [ ] Drag-resizing the window relays out the shell and the active service with no stale geometry, gap or overlap (Windows 11)
 - [ ] Changing the display scale factor (moving the window to a different-DPI display, or changing OS scaling) relays out both webviews correctly (macOS)
-- [ ] Changing the display scale factor relays out both webviews correctly (Windows 11)
+- [ ] Changing the display scale factor relays out both webviews correctly (Windows 11) — include a fractional Windows scale (e.g. 125% or 150%), not just 100%/200%; this check, and the 52px sidebar width it covers (Task #98), apply equally at fractional scales
 - [ ] Minimising and restoring the window leaves the shell and the active service in their prior layout, with no crash (macOS)
 - [ ] Minimising and restoring the window leaves the shell and the active service in their prior layout, with no crash (Windows 11)
 
@@ -51,7 +51,7 @@ For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/
 
 `shell`/`settings` have no frontend UI yet (Task 1.10/1.12), so every check below is driven from DevTools, following SP3's procedure (`docs/spikes/SP3.md`): open the `shell` webview's DevTools and run `window.__TAURI_INTERNALS__.invoke("<command>", { ... })` / `window.__TAURI_INTERNALS__.invoke("get_snapshot")` in its console. Run once with the default `MultiwebviewHost` and once with `--features host-child-windows` (`ChildWindowHost`) — both build `shell.json`'s two webview labels the same way, but only a real build proves each backend applies it. For each item, record date, platform and result (pass/fail, with notes) before checking it off.
 
-- [ ] `invoke("get_snapshot")` from the `shell` webview's DevTools console succeeds and returns `settings`, `services`, an empty `statuses`, and `sidebarWidth` equal to `64` (macOS, default host)
+- [ ] `invoke("get_snapshot")` from the `shell` webview's DevTools console succeeds and returns `settings`, `services`, an empty `statuses`, and `sidebarWidth` equal to `52` (macOS, default host)
 - [ ] Same, Windows 11
 - [ ] Same, macOS with `--features host-child-windows`
 - [ ] The same `invoke("get_snapshot")` call from a `svc-<id>` service webview's DevTools console is rejected (no `allow-get-snapshot` permission there) — try both the default host and `--features host-child-windows` (macOS)
@@ -71,7 +71,8 @@ For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/
 
 - [ ] Drag-and-drop reorder works in the real shell (macOS/Windows)
 - [ ] Task #88: service icons are visibly inset from the sidebar's edges (not filling it edge to edge), and the "+"/gear buttons at the bottom are clearly visible, sized, and clickable — in both light and dark mode (macOS/Windows)
-- [ ] Task #93: on the 64px rail, service icons render at 24px while the "+"/gear buttons stay 40px with 20px glyphs; vertical padding/spacing looks balanced; unread badges (including `999+`), the stale dot and the warning mark stay anchored top-right of each icon without horizontal clipping; a generated initial (no cached image) fits inside the 24px icon — if the letter overflows, record that fact (the initial's font size does not follow `size`; a fix is out of scope here) — in both light and dark mode (macOS/Windows)
+- [ ] Task #93: on the 52px rail, service icons render at 24px while the "+"/gear buttons stay 40px with 20px glyphs; vertical padding/spacing looks balanced; unread badges (including `999+`), the stale dot and the warning mark stay anchored top-right of each icon without horizontal clipping; a generated initial (no cached image) fits inside the 24px icon — if the letter overflows, record that fact (the initial's font size does not follow `size`; a fix is out of scope here) — in both light and dark mode (macOS/Windows)
+- [ ] Task #98: on the narrower 52px rail, the vertical gap between service icons is a visible ~12px (`src/components/sidebarMetrics.ts`'s `listGap`), and the rail's horizontal padding (icons roughly centred, ~6px on each side of the 24px icon within the 40px action-button column) leaves no icon touching the rail's edge; the "+" and gear action buttons keep a ~12px gap between them; in both light and dark mode, `999+` unread pills, the stale dot and the warning-glyph badge all still render top-right of their icon and are not clipped by the narrower rail (macOS/Windows)
 
 ### Task 1.12 — Settings window: service CRUD
 

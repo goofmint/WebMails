@@ -364,7 +364,7 @@ The Rust dispatcher owns notifications. Page-originated notifications are suppre
 
 ## 11. Sidebar and icons
 
-Vertical strip, ~64px, Slack-style. Drag to reorder, writes back to `config.toml`.
+Vertical strip, ~52px, Slack-style. Drag to reorder, writes back to `config.toml`.
 
 ### 11.1 Icon resolution
 
