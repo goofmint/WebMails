@@ -37,6 +37,7 @@ pub use new_window::Classification;
 pub use child_windows::ChildWindowHost;
 
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use tauri::webview::{PageLoadPayload, WebviewBuilder};
 use tauri::{AppHandle, Webview, WebviewUrl, Window, Wry};
@@ -229,6 +230,22 @@ pub fn apply_service_settings_window<'a, M: tauri::Manager<Wry>>(
 /// a stale handle.
 pub type ServiceViewSlot = Arc<Mutex<Option<Webview<Wry>>>>;
 
+/// Minimum time between two external-browser launches for one service's
+/// new-window requests. A page script calling `window.open` in a loop would
+/// otherwise open an unbounded number of default-browser tabs; requests
+/// arriving sooner than this after the last accepted launch are dropped.
+const EXTERNAL_OPEN_MIN_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Whether an external launch at `now` is allowed, given the previous
+/// accepted launch time (`None` = no launch yet). Pure, so the rate-limit
+/// rule is testable without Tauri.
+fn external_open_allowed(last: Option<Instant>, now: Instant) -> bool {
+    match last {
+        None => true,
+        Some(last) => now.saturating_duration_since(last) >= EXTERNAL_OPEN_MIN_INTERVAL,
+    }
+}
+
 /// Builds the `on_new_window` callback every service `WebviewBuilder`/
 /// `WebviewWindowBuilder` installs (`multiwebview.rs` and, behind Cargo
 /// feature `host-child-windows`, `child_windows.rs`) — positioned like
@@ -245,7 +262,9 @@ pub type ServiceViewSlot = Arc<Mutex<Option<Webview<Wry>>>>;
 ///   empty slot (the webview hasn't been registered yet, or was already
 ///   cleared) logs a warning and does nothing.
 /// - [`Classification::External`][]: `tauri::async_runtime::spawn_blocking`s
-///   `tauri_plugin_opener::open_url`.
+///   `tauri_plugin_opener::open_url`, at most once per
+///   [`EXTERNAL_OPEN_MIN_INTERVAL`] per service (later requests inside that
+///   window are dropped and logged).
 /// - [`Classification::Deny`][]: nothing further.
 ///
 /// Every log line names the service id, the classification and (for
@@ -260,6 +279,8 @@ pub fn new_window_handler(
 ) -> impl Fn(Url, tauri::webview::NewWindowFeatures) -> tauri::webview::NewWindowResponse<Wry>
        + Send
        + 'static {
+    // Per-service: one handler (and so one timestamp) per service webview.
+    let last_external_open: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
     move |url, _features| {
         let classification = new_window::classify(&configured_url, &url);
         let host = url.host_str().unwrap_or("<no-host>");
@@ -293,6 +314,26 @@ pub fn new_window_handler(
                 }
             }
             Classification::External => {
+                let now = Instant::now();
+                let allowed = match last_external_open.lock() {
+                    Ok(mut last) => {
+                        let allowed = external_open_allowed(*last, now);
+                        if allowed {
+                            *last = Some(now);
+                        }
+                        allowed
+                    }
+                    Err(_) => {
+                        tracing::error!("service '{id}': external-open rate-limit mutex poisoned");
+                        return tauri::webview::NewWindowResponse::Deny;
+                    }
+                };
+                if !allowed {
+                    tracing::warn!(
+                        "service '{id}': external new-window request dropped (rate limited, host {host})"
+                    );
+                    return tauri::webview::NewWindowResponse::Deny;
+                }
                 let id = id.clone();
                 tauri::async_runtime::spawn_blocking(move || {
                     if let Err(err) = tauri_plugin_opener::open_url(url.as_str(), None::<&str>) {
@@ -373,6 +414,28 @@ pub fn build_main_host<B: ProfileBackend + Send + Sync + 'static>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn external_open_allowed_first_launch() {
+        assert!(super::external_open_allowed(
+            None,
+            std::time::Instant::now()
+        ));
+    }
+
+    #[test]
+    fn external_open_rate_limited_inside_interval() {
+        let last = std::time::Instant::now();
+        let soon = last + super::EXTERNAL_OPEN_MIN_INTERVAL / 2;
+        assert!(!super::external_open_allowed(Some(last), soon));
+    }
+
+    #[test]
+    fn external_open_allowed_after_interval() {
+        let last = std::time::Instant::now();
+        let later = last + super::EXTERNAL_OPEN_MIN_INTERVAL;
+        assert!(super::external_open_allowed(Some(last), later));
+    }
+
     use super::*;
 
     #[test]
