@@ -254,7 +254,7 @@ pub struct ServiceWebviewSpec {
   - the profile backend
 - **Windows browser arguments** are one constant, used for **every** webview, the shell included (§5.2, §9.2):
   `--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows`
-- `SIDEBAR_WIDTH` is a single Rust constant (64px). The shell reads it from `get_snapshot`, so the width is not duplicated.
+- `SIDEBAR_WIDTH` is a single Rust constant (52px). The shell reads it from `get_snapshot`, so the width is not duplicated.
 
 #### 2.2.5 `services`
 
@@ -404,8 +404,9 @@ Events sent to the shell: `services-changed`, `status-changed`, `select-service`
 
 #### 2.2.13 Shell UI (`src/`)
 
-- **Sidebar** (`shell` webview, 64px):
+- **Sidebar** (`shell` webview, 52px):
   - A vertical list of `ServiceIcon`s: icon, `Badge`, and the name in a tooltip.
+  - Icons are 24px, the "+"/gear action buttons are 40px, and the gap between icons is 12px (`src/components/sidebarMetrics.ts`).
   - HTML5 drag and drop reorders the list and calls `reorder_services`.
   - A "+" button at the bottom and a settings (gear) button both call `open_settings`.
 - **Badge rendering** (§11.3), when `badge_sidebar` is true:
@@ -692,7 +693,7 @@ page DOM/title ─(MutationObserver)─▶ recipe.read()
 ### Open points for owner review
 
 1. The App Nap activity option (above).
-2. Settings and service CRUD live in a **separate settings window**, not inside the 64px sidebar webview.
+2. Settings and service CRUD live in a **separate settings window**, not inside the 52px sidebar webview.
 3. `STARTUP_STAGGER` = 1500ms and fetch jitter = ±20% are internal constants, not config keys.
 4. Deleting an isolated service offers to delete its session data (a checkbox, off by default).
 5. The generic title recipe cannot detect a signed-out state on the same origin, so it reports `0` there, not `null`.

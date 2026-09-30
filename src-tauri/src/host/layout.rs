@@ -10,9 +10,9 @@
 
 /// Width of the shell sidebar, in logical pixels. The single Rust constant
 /// for `SIDEBAR_WIDTH` (design.md §2.2.4: "`SIDEBAR_WIDTH` is a single
-/// Rust constant (64px)"); every other module that needs the sidebar
+/// Rust constant (52px)"); every other module that needs the sidebar
 /// width reads this one instead of repeating the number.
-pub const SIDEBAR_WIDTH: f64 = 64.0;
+pub const SIDEBAR_WIDTH: f64 = 52.0;
 
 /// A rectangle in logical pixels: an `(x, y)` origin plus a `width` and
 /// `height`.
@@ -132,7 +132,7 @@ mod tests {
     fn content_rect_starts_right_of_the_sidebar() {
         assert_eq!(
             content_rect(1000.0, 700.0),
-            Rect::new(64.0, 0.0, 936.0, 700.0)
+            Rect::new(52.0, 0.0, 948.0, 700.0)
         );
     }
 
@@ -147,7 +147,7 @@ mod tests {
         let content = content_rect(1000.0, 700.0);
         assert_eq!(
             offscreen_rect(content),
-            Rect::new(-1000.0, 0.0, 936.0, 700.0)
+            Rect::new(-1000.0, 0.0, 948.0, 700.0)
         );
     }
 
@@ -156,7 +156,7 @@ mod tests {
         // The window spans x = 0..window_width; an inactive service's
         // rect must lie entirely to the left of x = 0 for every window
         // size, not just the one fixture size above.
-        for window_width in [0.0, 10.0, 64.0, 200.0, 1000.0, 4000.0] {
+        for window_width in [0.0, 10.0, 52.0, 200.0, 1000.0, 4000.0] {
             let content = content_rect(window_width, 700.0);
             let offscreen = offscreen_rect(content);
             assert!(
@@ -233,7 +233,7 @@ mod tests {
 
     #[test]
     fn content_rect_saturates_when_window_is_narrower_than_the_sidebar() {
-        // window_width (50) < SIDEBAR_WIDTH (64): content width would be
+        // window_width (50) < SIDEBAR_WIDTH (52): content width would be
         // negative without saturation.
         assert_eq!(
             content_rect(50.0, 700.0),

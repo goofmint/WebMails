@@ -164,7 +164,7 @@ describe("Sidebar", () => {
     renderSidebar();
     const gmail = await screen.findByRole("button", { name: "Gmail" });
 
-    const metrics = sidebarMetrics(64);
+    const metrics = sidebarMetrics(52);
     expect(gmail.style.width).toBe(`${metrics.iconSize}px`);
     expect(gmail.style.height).toBe(`${metrics.iconSize}px`);
   });
@@ -178,7 +178,7 @@ describe("Sidebar", () => {
     expect(gmail.style.height).toBe(`${metrics.iconSize}px`);
   });
 
-  it("renders 24px service icons with 40px action buttons and 20px glyphs at the 64px sidebar", async () => {
+  it("renders 24px service icons with 40px action buttons and 20px glyphs at the 52px sidebar", async () => {
     renderSidebar();
     const gmail = await screen.findByRole("button", { name: "Gmail" });
 
@@ -194,7 +194,7 @@ describe("Sidebar", () => {
     await screen.findByRole("button", { name: "Gmail" });
 
     const aside = screen.getByRole("complementary", { name: "Services" });
-    const metrics = sidebarMetrics(64);
+    const metrics = sidebarMetrics(52);
     expect(aside.style.getPropertyValue("--sidebar-icon-size")).toBe(`${metrics.iconSize}px`);
     expect(aside.style.getPropertyValue("--sidebar-list-padding")).toBe(`${metrics.listPadding}px`);
     expect(aside.style.getPropertyValue("--sidebar-list-gap")).toBe(`${metrics.listGap}px`);
@@ -221,7 +221,7 @@ describe("Sidebar", () => {
 
     const root = document.querySelector<HTMLElement>(".config-error-screen");
     expect(root).not.toBeNull();
-    const metrics = sidebarMetrics(64);
+    const metrics = sidebarMetrics(52);
     expect(root?.style.getPropertyValue("--sidebar-icon-size")).toBe(`${metrics.iconSize}px`);
     expect(root?.style.getPropertyValue("--sidebar-action-size")).toBe(
       `${metrics.actionButtonSize}px`,

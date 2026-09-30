@@ -24,7 +24,7 @@ export function snapshot(overrides: Partial<Snapshot> = {}): Snapshot {
     },
     services: [service({ id: "gmail", name: "Gmail" }), service({ id: "icloud", name: "iCloud" })],
     statuses: {},
-    sidebarWidth: 64,
+    sidebarWidth: 52,
     activeServiceId: null,
     icons: {},
     ...overrides,
