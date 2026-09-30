@@ -112,13 +112,13 @@ mod tests {
             vec![service()],
             None,
             HashMap::new(),
-            64.0,
+            52.0,
             None,
             BTreeMap::new(),
         );
         let value = serde_json::to_value(&dto).expect("serialize");
 
-        assert_eq!(value["sidebarWidth"], json!(64.0));
+        assert_eq!(value["sidebarWidth"], json!(52.0));
         assert_eq!(value["statuses"], json!({}));
         assert!(value.get("configError").is_none());
         assert_eq!(value["settings"]["reconcile_interval_seconds"], json!(60));
@@ -137,7 +137,7 @@ mod tests {
             Vec::new(),
             Some(error),
             HashMap::new(),
-            64.0,
+            52.0,
             None,
             BTreeMap::new(),
         );
@@ -160,7 +160,7 @@ mod tests {
             Vec::new(),
             None,
             HashMap::new(),
-            64.0,
+            52.0,
             None,
             BTreeMap::new(),
         );
@@ -186,7 +186,7 @@ mod tests {
             Vec::new(),
             None,
             statuses,
-            64.0,
+            52.0,
             None,
             BTreeMap::new(),
         );
@@ -206,7 +206,7 @@ mod tests {
             vec![service()],
             None,
             HashMap::new(),
-            64.0,
+            52.0,
             Some(ServiceId::new("gmail").expect("valid id")),
             BTreeMap::new(),
         );
@@ -221,7 +221,7 @@ mod tests {
             vec![service()],
             None,
             HashMap::new(),
-            64.0,
+            52.0,
             None,
             BTreeMap::new(),
         );
@@ -247,7 +247,7 @@ mod tests {
             vec![service()],
             None,
             HashMap::new(),
-            64.0,
+            52.0,
             None,
             icons,
         );
@@ -266,7 +266,7 @@ mod tests {
             vec![service()],
             None,
             HashMap::new(),
-            64.0,
+            52.0,
             None,
             BTreeMap::new(),
         );
