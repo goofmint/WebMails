@@ -22,6 +22,7 @@
 
 pub mod layout;
 mod multiwebview;
+pub mod new_window;
 
 #[cfg(feature = "host-child-windows")]
 mod child_geometry;
@@ -30,11 +31,13 @@ mod child_windows;
 
 pub use layout::{Rect, SIDEBAR_WIDTH};
 pub use multiwebview::MultiwebviewHost;
+pub use new_window::Classification;
 
 #[cfg(feature = "host-child-windows")]
 pub use child_windows::ChildWindowHost;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use tauri::webview::{PageLoadPayload, WebviewBuilder};
 use tauri::{AppHandle, Webview, WebviewUrl, Window, Wry};
@@ -214,6 +217,139 @@ pub fn apply_service_settings_window<'a, M: tauri::Manager<Wry>>(
     builder
 }
 
+/// Holds the live `Webview` for one service's current webview/window, so
+/// [`new_window_handler`]'s callback (built and handed to the builder
+/// before that webview exists) can reach it once it does (Task #95,
+/// design.md's "Service webview new-window requests" section).
+///
+/// One slot per *creation attempt*, not per service id: `multiwebview.rs`
+/// and `child_windows.rs` each build a fresh slot in `create`, fill it
+/// right after the webview/window comes back from the builder, and clear
+/// it before `close()` — never reused across a destroy/recreate cycle, so
+/// a callback captured by an old, already-closed webview can never resolve
+/// a stale handle.
+pub type ServiceViewSlot = Arc<Mutex<Option<Webview<Wry>>>>;
+
+/// Minimum time between two external-browser launches for one service's
+/// new-window requests. A page script calling `window.open` in a loop would
+/// otherwise open an unbounded number of default-browser tabs; requests
+/// arriving sooner than this after the last accepted launch are dropped.
+const EXTERNAL_OPEN_MIN_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Whether an external launch at `now` is allowed, given the previous
+/// accepted launch time (`None` = no launch yet). Pure, so the rate-limit
+/// rule is testable without Tauri.
+fn external_open_allowed(last: Option<Instant>, now: Instant) -> bool {
+    match last {
+        None => true,
+        Some(last) => now.saturating_duration_since(last) >= EXTERNAL_OPEN_MIN_INTERVAL,
+    }
+}
+
+/// Builds the `on_new_window` callback every service `WebviewBuilder`/
+/// `WebviewWindowBuilder` installs (`multiwebview.rs` and, behind Cargo
+/// feature `host-child-windows`, `child_windows.rs`) — positioned like
+/// [`apply_service_settings`]: one shared helper both hosts call while
+/// constructing a service's builder, before that service's webview exists.
+///
+/// The callback always returns `NewWindowResponse::Deny` (this app never
+/// creates a new Tauri window or webview for a `target="_blank"`/
+/// `window.open` request — design.md's own rationale). What it does before
+/// returning depends on [`new_window::classify`]:
+/// - [`Classification::SameView`][]: clones the handle out of `slot` (lock
+///   held only long enough for that clone) and, if one was there,
+///   `tauri::async_runtime::spawn`s a `Webview::navigate` to `url`. An
+///   empty slot (the webview hasn't been registered yet, or was already
+///   cleared) logs a warning and does nothing.
+/// - [`Classification::External`][]: `tauri::async_runtime::spawn_blocking`s
+///   `tauri_plugin_opener::open_url`, at most once per
+///   [`EXTERNAL_OPEN_MIN_INTERVAL`] per service (later requests inside that
+///   window are dropped and logged).
+/// - [`Classification::Deny`][]: nothing further.
+///
+/// Every log line names the service id, the classification and (for
+/// `SameView`/`External`, where a host is available) the request's host —
+/// never the full URL. The callback never locks the host's own registry or
+/// calls back into it, and never holds `slot`'s mutex across `close`,
+/// `navigate` or `open_url`.
+pub fn new_window_handler(
+    id: ServiceId,
+    configured_url: Url,
+    slot: ServiceViewSlot,
+) -> impl Fn(Url, tauri::webview::NewWindowFeatures) -> tauri::webview::NewWindowResponse<Wry>
+       + Send
+       + 'static {
+    // Per-service: one handler (and so one timestamp) per service webview.
+    let last_external_open: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
+    move |url, _features| {
+        let classification = new_window::classify(&configured_url, &url);
+        let host = url.host_str().unwrap_or("<no-host>");
+        tracing::debug!(
+            "service '{id}': new-window request classified as {classification:?} (host {host})"
+        );
+
+        match classification {
+            Classification::SameView => {
+                let webview = match slot.lock() {
+                    Ok(guard) => guard.clone(),
+                    Err(_) => {
+                        tracing::error!("service '{id}': new-window slot mutex poisoned");
+                        return tauri::webview::NewWindowResponse::Deny;
+                    }
+                };
+                match webview {
+                    Some(webview) => {
+                        let id = id.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(err) = webview.navigate(url) {
+                                tracing::error!(
+                                    "service '{id}': same-view new-window navigate failed: {err}"
+                                );
+                            }
+                        });
+                    }
+                    None => tracing::warn!(
+                        "service '{id}': new-window slot empty for a SameView request"
+                    ),
+                }
+            }
+            Classification::External => {
+                let now = Instant::now();
+                let allowed = match last_external_open.lock() {
+                    Ok(mut last) => {
+                        let allowed = external_open_allowed(*last, now);
+                        if allowed {
+                            *last = Some(now);
+                        }
+                        allowed
+                    }
+                    Err(_) => {
+                        tracing::error!("service '{id}': external-open rate-limit mutex poisoned");
+                        return tauri::webview::NewWindowResponse::Deny;
+                    }
+                };
+                if !allowed {
+                    tracing::warn!(
+                        "service '{id}': external new-window request dropped (rate limited, host {host})"
+                    );
+                    return tauri::webview::NewWindowResponse::Deny;
+                }
+                let id = id.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    if let Err(err) = tauri_plugin_opener::open_url(url.as_str(), None::<&str>) {
+                        tracing::error!(
+                            "service '{id}': opening external new-window URL failed: {err}"
+                        );
+                    }
+                });
+            }
+            Classification::Deny => {}
+        }
+
+        tauri::webview::NewWindowResponse::Deny
+    }
+}
+
 /// Builds the app's main window and the `WebviewHost` this build uses,
 /// behind one cfg branch (design.md §8.1; Task 1.7's own instructions:
 /// keep `lib.rs`'s diff to this call, since Task 1.8 edits `setup`
@@ -278,6 +414,28 @@ pub fn build_main_host<B: ProfileBackend + Send + Sync + 'static>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn external_open_allowed_first_launch() {
+        assert!(super::external_open_allowed(
+            None,
+            std::time::Instant::now()
+        ));
+    }
+
+    #[test]
+    fn external_open_rate_limited_inside_interval() {
+        let last = std::time::Instant::now();
+        let soon = last + super::EXTERNAL_OPEN_MIN_INTERVAL / 2;
+        assert!(!super::external_open_allowed(Some(last), soon));
+    }
+
+    #[test]
+    fn external_open_allowed_after_interval() {
+        let last = std::time::Instant::now();
+        let later = last + super::EXTERNAL_OPEN_MIN_INTERVAL;
+        assert!(super::external_open_allowed(Some(last), later));
+    }
+
     use super::*;
 
     #[test]

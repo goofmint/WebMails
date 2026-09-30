@@ -116,6 +116,19 @@ For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/
 - [ ] Tabbing through the settings window (services list, Add service form, global settings form, recipe panel, diagnostics panel) shows a clearly visible focus outline on every button, input, checkbox and radio in turn, in a sensible order (macOS/Windows 11)
 - [ ] Resizing the settings window to a narrow width keeps every section readable: text wraps or truncates instead of overflowing the window, the diagnostics table scrolls horizontally instead of breaking the layout, and no control becomes unreachable (macOS/Windows 11)
 
+### Issue #95 — New-window links from service webviews
+
+`target="_blank"` links and `window.open` calls in a service webview no longer do nothing: same-registrable-domain requests navigate the existing service webview in place, everything else `http`/`https` opens in the default browser, and every other scheme is denied outright (design.md's "Service webview new-window requests" section). Run each item against both hosts — the default (`MultiwebviewHost`) and `cargo tauri dev --features host-child-windows` (`ChildWindowHost`) — recording date, platform, host and result (pass/fail, with notes) before checking it off.
+
+- [ ] With a Gmail service signed in, opening the account menu and choosing "Add another account" opens the Google sign-in screen **in the same service webview** — no new app window appears (macOS, default host)
+- [ ] Same, Windows 11, default host
+- [ ] Same, macOS, `--features host-child-windows`
+- [ ] Same, Windows 11, `--features host-child-windows`
+- [ ] Completing sign-in for the second account, that service's URL segment (e.g. `/u/1/`) shows the second account's own Gmail inbox, not the first account's (macOS/Windows 11, both hosts)
+- [ ] Opening a `target="_blank"` link to an unrelated domain inside a mail message (e.g. a link in an email body) opens it in the OS default browser, and no new window or tab appears inside the app (macOS/Windows 11, both hosts)
+- [ ] A `mailto:` link (or another non-`http`/`https` link, e.g. `tel:`) inside a mail message does nothing when clicked — no app window, no default browser launch, no crash (macOS/Windows 11, both hosts)
+- [ ] The shell and settings windows behave exactly as before this change — e.g. `open_settings` still opens a single settings window, and clicking any link inside the settings UI is unaffected (macOS/Windows 11)
+
 ## M2 — Unread
 
 Exit criterion (SPEC §16): N Gmail accounts plus iCloud show live counts while the window is in the background.
