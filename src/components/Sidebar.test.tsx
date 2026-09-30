@@ -178,6 +178,17 @@ describe("Sidebar", () => {
     expect(gmail.style.height).toBe(`${metrics.iconSize}px`);
   });
 
+  it("renders 24px service icons with 40px action buttons and 20px glyphs at the 64px sidebar", async () => {
+    renderSidebar();
+    const gmail = await screen.findByRole("button", { name: "Gmail" });
+
+    expect(gmail.style.width).toBe("24px");
+    expect(gmail.style.height).toBe("24px");
+    const aside = screen.getByRole("complementary", { name: "Services" });
+    expect(aside.style.getPropertyValue("--sidebar-action-size")).toBe("40px");
+    expect(aside.style.getPropertyValue("--sidebar-action-glyph-size")).toBe("20px");
+  });
+
   it("sets sidebarMetrics's derived CSS custom properties on the aside element", async () => {
     renderSidebar();
     await screen.findByRole("button", { name: "Gmail" });

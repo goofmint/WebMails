@@ -71,6 +71,7 @@ For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/
 
 - [ ] Drag-and-drop reorder works in the real shell (macOS/Windows)
 - [ ] Task #88: service icons are visibly inset from the sidebar's edges (not filling it edge to edge), and the "+"/gear buttons at the bottom are clearly visible, sized, and clickable — in both light and dark mode (macOS/Windows)
+- [ ] Task #93: on the 64px rail, service icons render at 24px while the "+"/gear buttons stay 40px with 20px glyphs; vertical padding/spacing looks balanced; unread badges (including `999+`), the stale dot and the warning mark stay anchored top-right of each icon without horizontal clipping; a generated initial (no cached image) fits inside the 24px icon — if the letter overflows, record that fact (the initial's font size does not follow `size`; a fix is out of scope here) — in both light and dark mode (macOS/Windows)
 
 ### Task 1.12 — Settings window: service CRUD
 

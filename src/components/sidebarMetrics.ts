@@ -4,17 +4,20 @@
  * `Snapshot.sidebarWidth` (never hard-coded in a component or stylesheet),
  * so the whole rail scales consistently if `sidebarWidth` ever changes.
  *
- * `ICON_SIZE_RATIO` is the single named ratio constant every other metric
- * is derived from: the icon shrinks to a fraction of the sidebar's width
- * (leaving visible padding around it, unlike the old edge-to-edge sizing),
- * and the remaining metrics fall out of that icon size and the leftover
- * space, rather than each introducing its own arbitrary ratio.
+ * Two named ratios drive everything: `ICON_SIZE_RATIO` sizes the service
+ * icons (Task #93 shrank them to 60% of #88's 40px, per the owner), and
+ * `ACTION_SIZE_RATIO` sizes the "+"/gear buttons independently, since the
+ * owner asked for those to be *larger* in #88. The rail's inner padding and
+ * gap fall out of the action-button size and the leftover space.
  */
 
 import type { CSSProperties } from "react";
 
-/** Icon size as a fraction of `sidebarWidth` — 0.625 × 64 = 40px. */
-const ICON_SIZE_RATIO = 0.625;
+/** Service icon size as a fraction of `sidebarWidth` — 0.375 × 64 = 24px. */
+const ICON_SIZE_RATIO = 0.375;
+
+/** "+"/gear button size as a fraction of `sidebarWidth` — 0.625 × 64 = 40px. */
+const ACTION_SIZE_RATIO = 0.625;
 
 export interface SidebarMetrics {
   /** `ServiceIcon`'s `size` prop (its button and glyph both scale from this). */
@@ -45,17 +48,18 @@ export type SidebarMetricsVars = CSSProperties & {
  */
 export function sidebarMetrics(sidebarWidth: number): SidebarMetrics {
   const iconSize = Math.round(sidebarWidth * ICON_SIZE_RATIO);
-  // Half the space `iconSize` leaves inside `sidebarWidth`, so the icon
-  // reads as inset from the rail's edges rather than filling them.
-  const listPadding = Math.round((sidebarWidth - iconSize) / 2);
+  const actionButtonSize = Math.round(sidebarWidth * ACTION_SIZE_RATIO);
+  // Half the space the (larger) action buttons leave inside `sidebarWidth`:
+  // the rail's inner padding, unchanged from #88 so only the icons shrink.
+  const listPadding = Math.round((sidebarWidth - actionButtonSize) / 2);
   const listGap = Math.round(listPadding / 2);
 
   return {
     iconSize,
     listPadding,
     listGap,
-    actionButtonSize: iconSize,
-    actionGlyphSize: Math.round(iconSize / 2),
+    actionButtonSize,
+    actionGlyphSize: Math.round(actionButtonSize / 2),
   };
 }
 

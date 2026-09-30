@@ -54,7 +54,8 @@ body {
 
 /* Task #88: the "+" (add) and gear (settings) buttons, previously
    unstyled and effectively invisible at the browser's default button
-   size. Sized from the same derived variables as the icons above them. */
+   size. Sized from their own derived variables (`--sidebar-action-*`),
+   independent of the smaller service icons above them (Task #93). */
 .sidebar__add-button,
 .sidebar__settings-button {
   box-sizing: border-box;
