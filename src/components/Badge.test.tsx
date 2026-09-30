@@ -42,13 +42,15 @@ describe("Badge", () => {
     expect(dot).toHaveTextContent("");
   });
 
-  it.each(["ReportedNone", "OffOrigin", "CreateFailed"])(
-    "renders a warning glyph for needsAttention (reason: %s)",
-    (reason) => {
-      renderBadge({ kind: "needsAttention", reason });
-      expect(screen.getByLabelText("Needs attention")).toHaveTextContent("⚠");
-    },
-  );
+  it.each([
+    ["reportedNone", "No unread count reported"],
+    ["offOrigin", "Page left the service origin"],
+    ["createFailed", "Service view could not be created"],
+  ] as const)("renders a warning glyph for needsAttention (reason: %s)", (reason, reasonLabel) => {
+    renderBadge({ kind: "needsAttention", reason });
+    const label = `Needs attention: ${reasonLabel}`;
+    expect(screen.getByLabelText(label)).toHaveTextContent("⚠");
+  });
 
   it("renders a warning glyph for needsAttention even with no reason", () => {
     renderBadge({ kind: "needsAttention" });
@@ -62,7 +64,7 @@ describe("Badge", () => {
       { kind: "ok", count: 5 },
       { kind: "ok", count: BADGE_COUNT_CAP + 1 },
       { kind: "stale" },
-      { kind: "needsAttention", reason: "ReportedNone" },
+      { kind: "needsAttention", reason: "reportedNone" },
     ];
 
     for (const status of statuses) {

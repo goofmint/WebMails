@@ -13,6 +13,7 @@ import { getDiagnostics } from "../ipc/commands";
 import { onServicesChanged } from "../ipc/events";
 import { toCommandError } from "../ipc/errors";
 import type { CommandError, Diagnostics, ServiceDiagnostic, ServiceStatus } from "../ipc/types";
+import { attentionReasonLabel } from "../components/badgeLabel";
 
 type DiagnosticsState =
   | { readonly status: "loading" }
@@ -48,7 +49,17 @@ function StatusBadge({ status }: { readonly status: ServiceStatus }) {
     status.kind === "ok" && status.count !== undefined
       ? `${STATUS_LABEL.ok} (${status.count})`
       : STATUS_LABEL[status.kind];
-  return <span className={`diagnostics__badge diagnostics__badge--${status.kind}`}>{label}</span>;
+  // Kept as a sibling, not nested inside the badge `<span>`, so the badge's
+  // own text stays exactly `label` — unchanged from before this reason
+  // label existed, and still an exact match for `STATUS_LABEL`/CSS-class
+  // assertions that query on that text alone.
+  const reasonLabel = status.kind === "needsAttention" ? attentionReasonLabel(status.reason) : null;
+  return (
+    <>
+      <span className={`diagnostics__badge diagnostics__badge--${status.kind}`}>{label}</span>
+      {reasonLabel !== null && <span className="diagnostics__badge-reason">{reasonLabel}</span>}
+    </>
+  );
 }
 
 /**

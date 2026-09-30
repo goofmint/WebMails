@@ -289,7 +289,9 @@ describe("ServiceIcon's accessible name", () => {
   });
 
   it("appends Badge's own label for needsAttention", () => {
-    renderIcon({ kind: "needsAttention", reason: "OffOrigin" }, true);
-    expect(screen.getByRole("button", { name: "Gmail, Needs attention" })).toBeInTheDocument();
+    renderIcon({ kind: "needsAttention", reason: "offOrigin" }, true);
+    expect(
+      screen.getByRole("button", { name: "Gmail, Needs attention: Page left the service origin" }),
+    ).toBeInTheDocument();
   });
 });
