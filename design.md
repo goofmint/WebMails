@@ -255,6 +255,16 @@ pub struct ServiceWebviewSpec {
 - **Windows browser arguments** are one constant, used for **every** webview, the shell included (§5.2, §9.2):
   `--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows`
 - `SIDEBAR_WIDTH` is a single Rust constant (64px). The shell reads it from `get_snapshot`, so the width is not duplicated.
+- **Service webview new-window requests (Task #95):** every service `WebviewBuilder`/`WebviewWindowBuilder` also installs `on_new_window`, which classifies the requested URL (`host/new_window.rs`'s `classify`) against **that service's own configured URL** — not the page's current URL — into one of three outcomes:
+  - **Same site:** the requested URL's registrable domain matches the configured URL's. Handled by navigating the existing service webview to it in place (`Webview::navigate`, via `tauri::async_runtime::spawn`). This is what lets Gmail's "Add another account" (`accounts.google.com`, a different host but the same registrable domain as `mail.google.com`) work in the same webview.
+  - **Other `http`/`https`:** any other host. Opened in the OS default browser via `tauri_plugin_opener::open_url` on `tauri::async_runtime::spawn_blocking` — this crate's standalone function only, never the registered plugin (no `app.plugin(tauri_plugin_opener::init())` call, no opener entry in `capabilities/`).
+  - **Non-`http`/`https`:** every other scheme (`javascript:`, `data:`, `blob:`, `file:`, `about:`, `mailto:`, `tel:`, custom schemes, and any URL with no host). Denied outright — nothing opens.
+
+  The registrable-domain comparison uses the `psl` crate only when the host's public suffix is a *known* PSL entry (`Suffix::is_known()`); an unknown suffix (e.g. `.invalid`) falls back to comparing the full host string instead of trusting an unlisted TLD's label split. In every case, the `on_new_window` callback itself always returns `NewWindowResponse::Deny` — this app never creates a new Tauri window or webview for a `target="_blank"`/`window.open` request; "same site" and "other `http`/`https`" are both side effects the callback triggers before returning `Deny`, not alternate `NewWindowResponse` variants.
+
+  This is unrelated to the `on_navigation` handler listed above (allow-all, logging only): `on_navigation` governs in-page navigations of the webview's own URL, `on_new_window` governs a *new*-window request; this task does not touch `on_navigation`. Scope: service webviews on both hosts (`MultiwebviewHost` and, behind `host-child-windows`, `ChildWindowHost`) only — the shell and settings webviews are unaffected.
+
+  **Known limitations:** a login flow that redirects to a different registrable domain than the configured service (e.g. `login.microsoftonline.com` for an Outlook service configured on `outlook.live.com`) opens in the default browser rather than completing in-app. `window.opener`-based communication back to the page that opened a popup does not work, since no popup window is ever actually created. While a service webview is mid-navigation to an out-of-domain sign-in page such as `accounts.google.com`, it reports `NeedsAttention` per SPEC.md's existing `None`-count handling (§9.4), not a stale/no-report state.
 
 #### 2.2.5 `services`
 

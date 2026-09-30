@@ -30,8 +30,8 @@ use crate::profile::ProfileBackend;
 
 use super::child_geometry::{self, PhysicalRect};
 use super::{
-    apply_common_settings_window, apply_service_settings_window, service_label, Rect,
-    ServiceWebviewSpec, WebviewHost,
+    apply_common_settings_window, apply_service_settings_window, new_window_handler, service_label,
+    Rect, ServiceViewSlot, ServiceWebviewSpec, WebviewHost,
 };
 
 /// The label `ChildWindowHost`'s main `WebviewWindow` uses (design.md
@@ -57,6 +57,13 @@ struct ParentGeometry {
     scale_factor: f64,
 }
 
+/// One resident service's window plus the [`ServiceViewSlot`] its
+/// `on_new_window` callback reads (Task #95, [`super::new_window_handler`]).
+struct ServiceEntry {
+    window: WebviewWindow<Wry>,
+    slot: ServiceViewSlot,
+}
+
 /// Registry state guarded by [`ChildWindowHost::registry`]: every resident
 /// service window, which one (if any) is active, and the most recently
 /// known parent geometry — needed for the same reason
@@ -64,7 +71,7 @@ struct ParentGeometry {
 /// content rect: [`WebviewHost::create`] must place a brand-new service
 /// somewhere before the next [`WebviewHost::relayout`] call arrives.
 struct Registry {
-    windows: HashMap<ServiceId, WebviewWindow<Wry>>,
+    windows: HashMap<ServiceId, ServiceEntry>,
     active: Option<ServiceId>,
     parent: ParentGeometry,
 }
@@ -129,8 +136,16 @@ impl<B: ProfileBackend> ChildWindowHost<B> {
                     return;
                 }
             };
-            for (id, window) in registry.windows.drain() {
-                if let Err(err) = window.close() {
+            for (id, entry) in registry.windows.drain() {
+                // Empty the slot before closing (Task #95), same ordering
+                // as `destroy` below.
+                match entry.slot.lock() {
+                    Ok(mut guard) => *guard = None,
+                    Err(_) => tracing::error!(
+                        "service '{id}': new-window slot mutex poisoned while closing on main destroy"
+                    ),
+                }
+                if let Err(err) = entry.window.close() {
                     tracing::error!("child window host: closing service '{id}' on main destroy failed: {err}");
                 }
             }
@@ -249,28 +264,56 @@ impl<B: ProfileBackend + Send + Sync> WebviewHost for ChildWindowHost<B> {
         )
         .ok_or_else(cannot_layout)?;
 
+        // One slot per creation attempt (never reused across a
+        // destroy/recreate cycle — Task #95, `super::ServiceViewSlot`'s own
+        // doc comment), so the `on_new_window` callback below always
+        // resolves either this window's webview or nothing, never a stale
+        // one.
+        let slot: ServiceViewSlot = Arc::new(Mutex::new(None));
+
         let label = service_label(&spec.id);
         let on_page_load = spec.on_page_load;
-        let builder = WebviewWindowBuilder::new(&self.app, label, WebviewUrl::External(spec.url))
-            .parent(&self.main)
-            .map_err(AppError::from)?
-            .decorations(false)
-            .focused(false)
-            // Shown only after the physical frame below is applied.
-            .visible(false)
-            .position(f64::from(offscreen.x), f64::from(offscreen.y))
-            .inner_size(f64::from(offscreen.width), f64::from(offscreen.height))
-            .initialization_script(spec.init_script)
-            .on_page_load(move |window, payload| on_page_load(window.as_ref().clone(), payload));
+        let builder =
+            WebviewWindowBuilder::new(&self.app, label, WebviewUrl::External(spec.url.clone()))
+                .parent(&self.main)
+                .map_err(AppError::from)?
+                .decorations(false)
+                .focused(false)
+                // Shown only after the physical frame below is applied.
+                .visible(false)
+                .position(f64::from(offscreen.x), f64::from(offscreen.y))
+                .inner_size(f64::from(offscreen.width), f64::from(offscreen.height))
+                .initialization_script(spec.init_script)
+                .on_page_load(move |window, payload| on_page_load(window.as_ref().clone(), payload))
+                .on_new_window(new_window_handler(spec.id.clone(), spec.url, slot.clone()));
         let builder = apply_common_settings_window(builder);
         let builder = apply_service_settings_window(builder);
         let builder = self.profile_backend.apply_window(builder, spec.profile);
 
         let window = builder.build().map_err(AppError::from)?;
 
+        // Filled immediately after creation, so a new-window request the
+        // page fires right after load already has a handle to navigate.
+        match slot.lock() {
+            Ok(mut guard) => *guard = Some(AsRef::<tauri::Webview<Wry>>::as_ref(&window).clone()),
+            Err(_) => tracing::error!(
+                "service '{}': new-window slot mutex poisoned while registering",
+                spec.id
+            ),
+        }
+
         // The builder's position/size are logical pixels; `offscreen` is
         // physical, so apply it explicitly before registering the window.
         if let Err(err) = apply_frame(&window, offscreen) {
+            // Best-effort close: empty the slot first (Task #95), same
+            // ordering as `destroy` below.
+            match slot.lock() {
+                Ok(mut guard) => *guard = None,
+                Err(_) => tracing::error!(
+                    "service '{}': new-window slot mutex poisoned while closing unplaceable window",
+                    spec.id
+                ),
+            }
             if let Err(close_err) = window.close() {
                 tracing::error!("closing unplaceable service window failed: {close_err}");
             }
@@ -279,6 +322,13 @@ impl<B: ProfileBackend + Send + Sync> WebviewHost for ChildWindowHost<B> {
         // Resident and visible from here on, offscreen until activated;
         // service windows are never hidden (design.md §2.2.4, §8.2).
         if let Err(err) = window.show() {
+            match slot.lock() {
+                Ok(mut guard) => *guard = None,
+                Err(_) => tracing::error!(
+                    "service '{}': new-window slot mutex poisoned while closing unshowable window",
+                    spec.id
+                ),
+            }
             if let Err(close_err) = window.close() {
                 tracing::error!("closing unshowable service window failed: {close_err}");
             }
@@ -307,21 +357,30 @@ impl<B: ProfileBackend + Send + Sync> WebviewHost for ChildWindowHost<B> {
             );
         }
 
-        registry.windows.insert(spec.id, window);
+        registry
+            .windows
+            .insert(spec.id, ServiceEntry { window, slot });
         Ok(())
     }
 
     fn destroy(&self, id: &ServiceId) -> AppResult<()> {
         let mut registry = self.lock()?;
+        let entry = registry.windows.get(id).ok_or_else(|| unknown_id(id))?;
+
+        // Empty the slot — and release its lock — before `close()`, so a
+        // callback already in flight can never clone a handle to a window
+        // that is about to close (Task #95).
+        match entry.slot.lock() {
+            Ok(mut guard) => *guard = None,
+            Err(_) => {
+                tracing::error!("service '{id}': new-window slot mutex poisoned while destroying")
+            }
+        }
+
         // Close first: if closing fails, the registry still tracks the
         // window, so the caller can retry or report it (mirrors
         // `MultiwebviewHost::destroy`).
-        registry
-            .windows
-            .get(id)
-            .ok_or_else(|| unknown_id(id))?
-            .close()
-            .map_err(AppError::from)?;
+        entry.window.close().map_err(AppError::from)?;
         registry.windows.remove(id);
         if registry.active.as_ref() == Some(id) {
             registry.active = None;
@@ -331,14 +390,14 @@ impl<B: ProfileBackend + Send + Sync> WebviewHost for ChildWindowHost<B> {
 
     fn reload(&self, id: &ServiceId) -> AppResult<()> {
         let registry = self.lock()?;
-        let window = registry.windows.get(id).ok_or_else(|| unknown_id(id))?;
-        window.reload().map_err(AppError::from)
+        let entry = registry.windows.get(id).ok_or_else(|| unknown_id(id))?;
+        entry.window.reload().map_err(AppError::from)
     }
 
     fn navigate(&self, id: &ServiceId, url: Url) -> AppResult<()> {
         let registry = self.lock()?;
-        let window = registry.windows.get(id).ok_or_else(|| unknown_id(id))?;
-        window.navigate(url).map_err(AppError::from)
+        let entry = registry.windows.get(id).ok_or_else(|| unknown_id(id))?;
+        entry.window.navigate(url).map_err(AppError::from)
     }
 
     fn activate(&self, id: &ServiceId) -> AppResult<()> {
@@ -366,19 +425,19 @@ impl<B: ProfileBackend + Send + Sync> WebviewHost for ChildWindowHost<B> {
         )
         .ok_or_else(cannot_layout)?;
 
-        for (svc_id, window) in registry.windows.iter() {
+        for (svc_id, entry) in registry.windows.iter() {
             let frame = if svc_id == id {
                 active_frame
             } else {
                 offscreen_frame
             };
-            apply_frame(window, frame)?;
+            apply_frame(&entry.window, frame)?;
         }
 
         // Present in `registry.windows` (checked above) and not removed
         // since, so this lookup cannot fail.
-        if let Some(window) = registry.windows.get(id) {
-            window.set_focus().map_err(AppError::from)?;
+        if let Some(entry) = registry.windows.get(id) {
+            entry.window.set_focus().map_err(AppError::from)?;
         }
         Ok(())
     }
@@ -416,13 +475,13 @@ impl<B: ProfileBackend + Send + Sync> WebviewHost for ChildWindowHost<B> {
         )
         .ok_or_else(cannot_layout)?;
 
-        for (svc_id, window) in registry.windows.iter() {
+        for (svc_id, entry) in registry.windows.iter() {
             let frame = if registry.active.as_ref() == Some(svc_id) {
                 active_frame
             } else {
                 offscreen_frame
             };
-            apply_frame(window, frame)?;
+            apply_frame(&entry.window, frame)?;
         }
         Ok(())
     }

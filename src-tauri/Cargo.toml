@@ -28,11 +28,17 @@ image = { version = "0.25", default-features = false, features = [
     "bmp",
     "webp",
 ] }
+# Registrable-domain comparison for the new-window classifier
+# (`host/new_window.rs`, Task #95).
+psl = "2.1.238"
 reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
 ] }
 serde = "1.0.229"
 serde_json = "1.0.151"
+# Only its standalone `open_url` function is used (Task #95); the plugin
+# itself is never registered and no opener capability is granted.
+tauri-plugin-opener = "2"
 thiserror = "2.0.21"
 tokio = { version = "1", features = ["time", "rt", "macros"] }
 toml = "1.1.6"

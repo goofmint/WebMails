@@ -17,7 +17,7 @@
 //! design §8.1) before relying on this in a released build.**
 
 use std::collections::HashMap;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use tauri::webview::WebviewBuilder;
 use tauri::{LogicalPosition, LogicalSize, Webview, WebviewUrl, Window, Wry};
@@ -29,11 +29,19 @@ use crate::profile::ProfileBackend;
 
 use super::layout::{self, Rect};
 use super::{
-    apply_common_settings, apply_service_settings, service_label, ServiceWebviewSpec, WebviewHost,
+    apply_common_settings, apply_service_settings, new_window_handler, service_label,
+    ServiceViewSlot, ServiceWebviewSpec, WebviewHost,
 };
 
 /// The label of the shell child webview (design.md §2.2.4).
 const SHELL_LABEL: &str = "shell";
+
+/// One resident service's webview plus the [`ServiceViewSlot`] its
+/// `on_new_window` callback reads (Task #95, [`new_window_handler`]).
+struct ServiceEntry {
+    webview: Webview<Wry>,
+    slot: ServiceViewSlot,
+}
 
 /// Registry state guarded by [`MultiwebviewHost::registry`]: every
 /// resident service webview, which one (if any) is active, and the most
@@ -41,7 +49,7 @@ const SHELL_LABEL: &str = "shell";
 /// must place a brand-new service somewhere before the next
 /// [`WebviewHost::relayout`] call arrives.
 struct Registry {
-    webviews: HashMap<ServiceId, Webview<Wry>>,
+    webviews: HashMap<ServiceId, ServiceEntry>,
     active: Option<ServiceId>,
     content: Rect,
 }
@@ -163,10 +171,17 @@ impl<B: ProfileBackend + Send + Sync> WebviewHost for MultiwebviewHost<B> {
         // at the most recently known content rect.
         let offscreen = layout::offscreen_rect(registry.content);
 
+        // One slot per creation attempt (never reused across a
+        // destroy/recreate cycle — Task #95, `super::ServiceViewSlot`'s own
+        // doc comment), so the `on_new_window` callback below always
+        // resolves either this webview or nothing, never a stale one.
+        let slot: ServiceViewSlot = Arc::new(Mutex::new(None));
+
         let label = service_label(&spec.id);
-        let builder = WebviewBuilder::new(label, WebviewUrl::External(spec.url))
+        let builder = WebviewBuilder::new(label, WebviewUrl::External(spec.url.clone()))
             .initialization_script(spec.init_script)
-            .on_page_load(spec.on_page_load);
+            .on_page_load(spec.on_page_load)
+            .on_new_window(new_window_handler(spec.id.clone(), spec.url, slot.clone()));
         let builder = apply_common_settings(builder);
         let builder = apply_service_settings(builder);
         let builder = self.profile_backend.apply(builder, spec.profile);
@@ -175,6 +190,16 @@ impl<B: ProfileBackend + Send + Sync> WebviewHost for MultiwebviewHost<B> {
             .window
             .add_child(builder, to_position(offscreen), to_size(offscreen))
             .map_err(AppError::from)?;
+
+        // Filled immediately after creation, so a new-window request the
+        // page fires right after load already has a handle to navigate.
+        match slot.lock() {
+            Ok(mut guard) => *guard = Some(webview.clone()),
+            Err(_) => tracing::error!(
+                "service '{}': new-window slot mutex poisoned while registering",
+                spec.id
+            ),
+        }
 
         // Windows only (design.md §2.2.11, Task 4.3): denies the
         // `NOTIFICATIONS` permission at the WebView2 layer, alongside the
@@ -190,20 +215,29 @@ impl<B: ProfileBackend + Send + Sync> WebviewHost for MultiwebviewHost<B> {
             );
         }
 
-        registry.webviews.insert(spec.id, webview);
+        registry
+            .webviews
+            .insert(spec.id, ServiceEntry { webview, slot });
         Ok(())
     }
 
     fn destroy(&self, id: &ServiceId) -> AppResult<()> {
         let mut registry = self.lock()?;
+        let entry = registry.webviews.get(id).ok_or_else(|| unknown_id(id))?;
+
+        // Empty the slot — and release its lock — before `close()`, so a
+        // callback already in flight can never clone a handle to a webview
+        // that is about to close (Task #95).
+        match entry.slot.lock() {
+            Ok(mut guard) => *guard = None,
+            Err(_) => {
+                tracing::error!("service '{id}': new-window slot mutex poisoned while destroying")
+            }
+        }
+
         // Close first: if closing fails, the registry still tracks the
         // webview, so the caller can retry or report it.
-        registry
-            .webviews
-            .get(id)
-            .ok_or_else(|| unknown_id(id))?
-            .close()
-            .map_err(AppError::from)?;
+        entry.webview.close().map_err(AppError::from)?;
         registry.webviews.remove(id);
         if registry.active.as_ref() == Some(id) {
             registry.active = None;
@@ -213,14 +247,14 @@ impl<B: ProfileBackend + Send + Sync> WebviewHost for MultiwebviewHost<B> {
 
     fn reload(&self, id: &ServiceId) -> AppResult<()> {
         let registry = self.lock()?;
-        let webview = registry.webviews.get(id).ok_or_else(|| unknown_id(id))?;
-        webview.reload().map_err(AppError::from)
+        let entry = registry.webviews.get(id).ok_or_else(|| unknown_id(id))?;
+        entry.webview.reload().map_err(AppError::from)
     }
 
     fn navigate(&self, id: &ServiceId, url: Url) -> AppResult<()> {
         let registry = self.lock()?;
-        let webview = registry.webviews.get(id).ok_or_else(|| unknown_id(id))?;
-        webview.navigate(url).map_err(AppError::from)
+        let entry = registry.webviews.get(id).ok_or_else(|| unknown_id(id))?;
+        entry.webview.navigate(url).map_err(AppError::from)
     }
 
     fn activate(&self, id: &ServiceId) -> AppResult<()> {
@@ -232,22 +266,26 @@ impl<B: ProfileBackend + Send + Sync> WebviewHost for MultiwebviewHost<B> {
 
         let active_rect = layout::active_rect(registry.content);
         let offscreen_rect = layout::offscreen_rect(registry.content);
-        for (svc_id, webview) in registry.webviews.iter() {
+        for (svc_id, entry) in registry.webviews.iter() {
             let rect = if svc_id == id {
                 active_rect
             } else {
                 offscreen_rect
             };
-            webview
+            entry
+                .webview
                 .set_position(to_position(rect))
                 .map_err(AppError::from)?;
-            webview.set_size(to_size(rect)).map_err(AppError::from)?;
+            entry
+                .webview
+                .set_size(to_size(rect))
+                .map_err(AppError::from)?;
         }
 
         // Present in `registry.webviews` (checked above) and not removed
         // since, so this lookup cannot fail.
-        if let Some(webview) = registry.webviews.get(id) {
-            webview.set_focus().map_err(AppError::from)?;
+        if let Some(entry) = registry.webviews.get(id) {
+            entry.webview.set_focus().map_err(AppError::from)?;
         }
         Ok(())
     }
@@ -266,16 +304,20 @@ impl<B: ProfileBackend + Send + Sync> WebviewHost for MultiwebviewHost<B> {
 
         let active_rect = layout::active_rect(content);
         let offscreen_rect = layout::offscreen_rect(content);
-        for (svc_id, webview) in registry.webviews.iter() {
+        for (svc_id, entry) in registry.webviews.iter() {
             let rect = if registry.active.as_ref() == Some(svc_id) {
                 active_rect
             } else {
                 offscreen_rect
             };
-            webview
+            entry
+                .webview
                 .set_position(to_position(rect))
                 .map_err(AppError::from)?;
-            webview.set_size(to_size(rect)).map_err(AppError::from)?;
+            entry
+                .webview
+                .set_size(to_size(rect))
+                .map_err(AppError::from)?;
         }
         Ok(())
     }
