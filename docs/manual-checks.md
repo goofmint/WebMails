@@ -173,6 +173,7 @@ For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/
 - [ ] Same, Windows 11
 - [ ] `window.__TAURI_INTERNALS__.invoke("get_diagnostics")` from a `svc-<id>` service webview's DevTools console is rejected (no `allow-get-diagnostics` permission there) (macOS)
 - [ ] Same rejection, Windows 11
+- [ ] For a service in an attention state, pressing Refresh shows its reason label next to "Needs attention" in the Diagnostics table, and the sidebar's ⚠ badge tooltip for that service shows the same reason (macOS)
 
 ## M4 — Notifications
 

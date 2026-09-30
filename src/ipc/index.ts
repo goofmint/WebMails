@@ -14,6 +14,7 @@ export type {
   IconSource,
   ConfigErrorInfo,
   ServiceStatus,
+  AttentionReason,
   CachedIconInfo,
   Snapshot,
   ServicePatchInput,

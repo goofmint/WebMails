@@ -57,18 +57,30 @@ export interface ConfigErrorInfo {
 }
 
 /**
+ * Why a service is `needsAttention` (Rust `AttentionReason` in
+ * `src-tauri/src/unread/status.rs`, `#[serde(rename_all = "camelCase")]`
+ * on a fieldless enum: each PascalCase variant — `ReportedNone`,
+ * `OffOrigin`, `CreateFailed` — serializes as exactly its camelCase form
+ * below).
+ */
+export type AttentionReason = "reportedNone" | "offOrigin" | "createFailed";
+
+/**
  * A `statuses` map entry (design.md §3.2: `{ kind, count?, reason? }`).
  * `get_snapshot`'s `statuses` map is always empty until Task 2.3 gives it
  * a real value type (`commands/snapshot.rs`'s `BTreeMap<ServiceId, ()>`
  * comment), so this type only fixes the *shape* the wire will eventually
  * carry. Rendered by `src/components/Badge.tsx` (Task 2.10; design.md
  * §2.2.13, §11.3), fed from `Snapshot.statuses` and kept current by
- * `onStatusChanged` events (`src/store/shellStore.ts`).
+ * `onStatusChanged` events (`src/store/shellStore.ts`). `reason` is only
+ * ever present when `kind` is `"needsAttention"` (Rust's
+ * `ServiceStatus::NeedsAttention { reason }`), but that isn't encoded here
+ * since nothing in this file discriminates on `kind`/`reason` together.
  */
 export interface ServiceStatus {
   readonly kind: "loading" | "ok" | "needsAttention" | "stale";
   readonly count?: number;
-  readonly reason?: string;
+  readonly reason?: AttentionReason;
 }
 
 /**

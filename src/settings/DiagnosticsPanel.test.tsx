@@ -112,6 +112,60 @@ describe("DiagnosticsPanel", () => {
     expect(staleBadge.className).not.toEqual(needsAttentionBadge.className);
   });
 
+  it.each([
+    ["reportedNone", "No unread count reported"],
+    ["offOrigin", "Page left the service origin"],
+    ["createFailed", "Service view could not be created"],
+  ] as const)(
+    "shows the reason label next to Needs attention for %s",
+    async (reason, reasonLabel) => {
+      const DIAGNOSTICS_WITH_REASON: Diagnostics = {
+        services: [
+          {
+            serviceId: "gmail",
+            name: "Gmail",
+            status: { kind: "needsAttention", reason },
+            hasReported: true,
+            lastReportAgeMs: 5_000,
+            staleCount: 1,
+            lastStaleAt: null,
+          },
+        ],
+      };
+      mockGetDiagnostics(() => Promise.resolve(DIAGNOSTICS_WITH_REASON));
+
+      render(<DiagnosticsPanel />);
+      await screen.findByText("Gmail");
+
+      const needsAttentionBadge = screen.getByText("Needs attention");
+      expect(needsAttentionBadge.className).toContain("diagnostics__badge--needsAttention");
+      expect(screen.getByText(reasonLabel)).toBeInTheDocument();
+    },
+  );
+
+  it("shows no reason label when needsAttention carries no reason", async () => {
+    const DIAGNOSTICS_NO_REASON: Diagnostics = {
+      services: [
+        {
+          serviceId: "gmail",
+          name: "Gmail",
+          status: { kind: "needsAttention" },
+          hasReported: true,
+          lastReportAgeMs: 5_000,
+          staleCount: 1,
+          lastStaleAt: null,
+        },
+      ],
+    };
+    mockGetDiagnostics(() => Promise.resolve(DIAGNOSTICS_NO_REASON));
+
+    const { container } = render(<DiagnosticsPanel />);
+    await screen.findByText("Gmail");
+
+    expect(screen.getByText("Needs attention")).toBeInTheDocument();
+    expect(container.querySelector(".diagnostics__badge-reason")).not.toBeInTheDocument();
+  });
+
   it("shows null last-report age as never reported, and a null last-stale-at as Never", async () => {
     mockGetDiagnostics(() => Promise.resolve(THREE_SERVICE_DIAGNOSTICS));
 

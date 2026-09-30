@@ -464,3 +464,7 @@
   background: var(--color-status-loading-bg);
   color: var(--color-status-loading-fg);
 }
+
+.diagnostics__badge-reason {
+  color: var(--color-text-muted);
+}
