@@ -141,7 +141,7 @@ For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/
 
 - [ ] With a real service configured (e.g. Gmail or iCloud) and its webview created, that webview's own DevTools console has `window.__ELUMA__` present right after load, shaped as `{ serviceId, serviceUrl, reportIntervalMs: 30000, reconcileIntervalMs }` (design.md §2.2.6) (macOS)
 - [ ] Same `window.__ELUMA__` shape check (Windows 11)
-- [ ] From that same service webview's DevTools console, `window.__TAURI_INTERNALS__.invoke('report_unread', { report: { serviceId: '<that service's id>', count: 1, messages: [], recipeId: 'generic', observedAt: Date.now(), iconCandidates: [] } })` resolves, and Rust's stderr log shows a debug line `accepted unread report` naming that service id (macOS). Debug lines are off unless the process is started with `RUST_LOG=eluma_lib::agent_bridge=debug,eluma_lib::services=debug` (default filter is `warn`; nothing is written under `{data_dir}/logs/`)
+- [ ] From that same service webview's DevTools console, `window.__TAURI_INTERNALS__.invoke('report_unread', { report: { serviceId: '<that service's id>', count: 1, messages: [], recipeId: 'generic', observedAt: Date.now(), iconCandidates: [] } })` resolves, and Rust's stderr log shows a debug line `accepted unread report` naming that service id (macOS). Debug lines are off unless the process is started with `RUST_LOG=warn,eluma_lib::agent_bridge=debug,eluma_lib::services=debug` (default filter is `warn`; nothing is written under `{data_dir}/logs/`)
 - [ ] Same successful invoke and matching debug log line (Windows 11)
 - [ ] The same invoke from the **shell** webview's own DevTools console (not a service's) is rejected — `shell` is not a `svc-<id>` webview and holds no runtime capability for `report_unread` (macOS)
 - [ ] Same shell-origin rejection (Windows 11)
@@ -168,7 +168,7 @@ Task #87 (`SERVICE_USER_AGENT`, macOS only): for each item, record date, platfor
 
 ### Task #97 — Gmail always shows Needs attention
 
-One signed-in run should be enough to name the cause. Start the dev build with `RUST_LOG=eluma_lib::agent_bridge=debug,eluma_lib::services=debug` so the lines below appear on stderr. In the Gmail webview's DevTools, run the feed fetch the same way the agent does (`mode: "same-origin"`, `credentials: "same-origin"`). Record every row before checking the completion items.
+One signed-in run should be enough to name the cause. Start the dev build with `RUST_LOG=warn,eluma_lib::agent_bridge=debug,eluma_lib::services=debug` so the lines below appear on stderr. In the Gmail webview's DevTools, run the feed fetch the same way the agent does (`mode: "same-origin"`, `credentials: "same-origin"`). Record every row before checking the completion items.
 
 Collect:
 

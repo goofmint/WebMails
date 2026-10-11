@@ -587,7 +587,7 @@ page DOM/title ─(MutationObserver)─▶ recipe.read()
 
 ### 5.2 Reporting and logging
 
-- `tracing` writes to stderr. The default filter is `warn`. Set `RUST_LOG` to raise it (for example `RUST_LOG=eluma_lib::agent_bridge=debug,eluma_lib::services=debug`). A daily file under `{data_dir}/logs/` is not written.
+- `tracing` writes to stderr. The default filter is `warn`. Set `RUST_LOG` to raise it (for example `RUST_LOG=warn,eluma_lib::agent_bridge=debug,eluma_lib::services=debug`). A daily file under `{data_dir}/logs/` is not written.
 - Every `AppError` that reaches a command is serialized as `{ kind, message }` and shown in the settings UI.
 - The settings Diagnostics view shows repeated staleness per service (§9.4).
 
