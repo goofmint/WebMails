@@ -194,6 +194,13 @@ Completion (after the fix is in a build the owner runs):
 - [ ] A signed-in Gmail shows the correct unread count (macOS)
 - [ ] Signed out, the same service shows `Needs attention` (`reportedNone` or `offOrigin`), not a stale count (macOS)
 
+### iCloud Mail
+
+The recipe reads a parenthesized count from the document title. A title with no count is shown as 0.
+
+- [ ] Signed into iCloud Mail (`https://www.icloud.com/mail/`), the sidebar badge matches the number in parentheses in the page title (macOS)
+- [ ] With no parenthesized number in the title, the badge is 0, not Needs attention (macOS)
+
 ## M3 — Background survival
 
 Exit criterion (SPEC §16): badges still correct after 2 hours minimised, on both platforms — or the Windows story is honestly documented as degraded.

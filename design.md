@@ -502,12 +502,12 @@ export interface Recipe {
     - If the feed `fetch` rejects (network error, CSP, or a cross-origin rejection), `mode` stays unchanged so the next read retries the feed. A title matching the Gmail count pattern is returned as that count with `messages: []`. A title with no count returns `count: null`.
     - `messages` come from feed entries. `id` is a hash of the entry id; `link` is a deep link `#all/<message id>` on the service URL.
     - `watch` uses `watchTitle`, so a change to the title triggers a fetch.
-  - `icloud`: matches `www.icloud.com/mail`, `isolated`, title strategy.
-  - `outlook`: matches `outlook.live.com`, `isolated`, title strategy.
+  - `icloud`: matches `www.icloud.com/mail`, `isolated`, title strategy. The unread count is a parenthesized number in the document title (`\((\d+)\)`). A title with no count is `0`. There is no signed-out marker in the recipe.
+  - `outlook`: matches `outlook.live.com`, `isolated`. Out of scope: `read()` stays a stub that returns `count: null`.
   - `generic`: matches any URL, `isolated`, title pattern `\((\d+)\)`.
 - **The `count = null` rule** (D1) differs by recipe:
   - The title strategy returns `0` when the title contains no count; a same-origin login page cannot be told apart from an empty inbox.
-  - Specific recipes return `null` when they detect a signed-out state. Gmail detects it from a feed redirect or a 401 together with a title that has no count (D1, unchanged). A rejected feed fetch is not that signal: it uses the title count when one is present, and `null` only when the title has no count. The iCloud and Outlook detection rules are defined in M2 from observation of the real pages (task 2.8).
+  - Specific recipes return `null` when they detect a signed-out state. Gmail detects it from a feed redirect or a 401 together with a title that has no count (D1, unchanged). A rejected feed fetch is not that signal: it uses the title count when one is present, and `null` only when the title has no count. iCloud has no signed-out marker, so a title with no count is `0`. Outlook is out of scope and its stub still returns `null`.
 - **Notification stub:** `window.Notification` is replaced with a class whose `permission` is `'denied'`, whose `requestPermission()` resolves to `'denied'`, and whose constructor throws. It is installed before any page script runs.
 
 ---

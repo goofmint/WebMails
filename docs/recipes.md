@@ -691,12 +691,12 @@ recipe.
 
 ## Current limitations
 
-- `agent/recipes/icloud.ts` and `agent/recipes/outlook.ts` are currently
-  stubs: `matches()` and `describe()` are real, but `read()` always resolves
-  `{ count: null }` and `watch()` is a no-op. Both are pending `tasks.md`
-  Task 2.8 (recording real signed-in/signed-out title observations from the
-  live services first, in `docs/recipes-notes.md`, before implementing the
-  title strategy and signed-out detection for either).
+- `agent/recipes/icloud.ts` reads a parenthesized count from the document
+  title and watches title changes. A title with no count is `{ count: 0 }`,
+  not `null`. There is no signed-out marker in the recipe.
+- `agent/recipes/outlook.ts` is still a stub: `matches()` and `describe()`
+  are real, but `read()` always resolves `{ count: null }` and `watch()` is
+  a no-op. Outlook is out of scope; only Gmail and iCloud are supported.
 - The recipe panel described in [How `describe()` is used](#how-describe-is-used)
   (`tasks.md` Task 5.1) does not exist yet in this codebase.
 - For the manual, on-real-account portion of adding or changing a recipe
