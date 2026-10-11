@@ -145,6 +145,25 @@ fn require_http_url(
     Ok(url)
 }
 
+/// `gmail.com` and `www.gmail.com` redirect to `mail.google.com`. A service
+/// configured on the alias selects the generic recipe, then stays
+/// `OffOrigin` after Gmail lands on its real origin (Task #97).
+fn normalize_gmail_alias(mut url: Url) -> Url {
+    let Some(host) = url.host_str() else {
+        return url;
+    };
+    if host != "gmail.com" && host != "www.gmail.com" {
+        return url;
+    }
+    if url.set_scheme("https").is_err() || url.set_host(Some("mail.google.com")).is_err() {
+        return url;
+    }
+    if url.path().is_empty() || url.path() == "/" {
+        url.set_path("/mail/");
+    }
+    url
+}
+
 fn parse_settings(table: &Table, file: &Path) -> Result<Settings, ConfigError> {
     let parent = "settings";
     Ok(Settings {
@@ -206,7 +225,7 @@ fn parse_service(table: &Table, parent: &str, file: &Path) -> Result<ServiceConf
 
     let name = require_str(table, "name", parent, file)?.to_string();
 
-    let url = require_http_url(table, "url", parent, file)?;
+    let url = normalize_gmail_alias(require_http_url(table, "url", parent, file)?);
 
     let profile_key = key_path(parent, "profile");
     let profile_raw = require_str(table, "profile", parent, file)?;
@@ -645,6 +664,46 @@ icon = { source = "favicon" }
                 "value {value}"
             );
         }
+    }
+
+    #[test]
+    fn gmail_alias_urls_normalize_to_mail_google_com() {
+        let cases = [
+            ("https://gmail.com", "https://mail.google.com/mail/"),
+            ("http://gmail.com/", "https://mail.google.com/mail/"),
+            ("https://www.gmail.com", "https://mail.google.com/mail/"),
+            (
+                "https://gmail.com/mail/u/0/",
+                "https://mail.google.com/mail/u/0/",
+            ),
+        ];
+        for (from, expected) in cases {
+            let text = MINIMAL_VALID_CONFIG.replace(
+                r#"url = "https://mail.example.com/""#,
+                &format!(r#"url = "{from}""#),
+            );
+            let config = parse(&text, &test_file()).expect(from);
+            assert_eq!(config.services[0].url.as_str(), expected, "{from}");
+        }
+    }
+
+    #[test]
+    fn non_gmail_hosts_are_not_rewritten() {
+        let untouched = parse(MINIMAL_VALID_CONFIG, &test_file()).expect("minimal config");
+        assert_eq!(
+            untouched.services[0].url.as_str(),
+            "https://mail.example.com/"
+        );
+
+        let text = MINIMAL_VALID_CONFIG.replace(
+            r#"url = "https://mail.example.com/""#,
+            r#"url = "https://mail.google.com/mail/u/0/""#,
+        );
+        let config = parse(&text, &test_file()).expect("mail.google.com stays");
+        assert_eq!(
+            config.services[0].url.as_str(),
+            "https://mail.google.com/mail/u/0/"
+        );
     }
 
     #[test]

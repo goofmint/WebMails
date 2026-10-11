@@ -339,6 +339,24 @@ mod tests {
     }
 
     #[test]
+    fn off_origin_is_replaced_by_a_none_report() {
+        let mut store = StatusStore::new();
+        store.mark_loading(&id("gmail"));
+        let evil = Url::parse("https://evil.example.com").expect("valid url");
+        store.record_page_load(&id("gmail"), &evil, &origin(GMAIL_ORIGIN));
+
+        let changed = store
+            .record_report(&id("gmail"), None)
+            .expect("should change");
+        assert_eq!(
+            changed.status,
+            ServiceStatus::NeedsAttention {
+                reason: AttentionReason::ReportedNone
+            }
+        );
+    }
+
+    #[test]
     fn mark_stale_transitions_and_emits() {
         let mut store = StatusStore::new();
         store.mark_loading(&id("gmail"));

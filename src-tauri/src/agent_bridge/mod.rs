@@ -68,9 +68,11 @@ pub(crate) use validate::validate;
 /// `NeedsAttention(ReportedNone)`) via [`ServiceManager::record_report`],
 /// plus (Task 1.14) a validated report's *icon candidates*, when
 /// non-empty, are handed to [`ServiceManager::record_icon_candidates`];
-/// then a debug log line naming the service id is emitted and `Ok(())`
-/// is returned. On rejection, only the service id and the rejection's
-/// `kind()` are logged (never the report's contents), and the report is
+/// then a debug log line naming the service id, count (`none` when the
+/// report's count is `None`), and recipe id is emitted and `Ok(())`
+/// is returned. On rejection, the service id, the rejection's `kind()`,
+/// and the caller and service origins (never a path or the report's
+/// contents) are logged, and the report is
 /// dropped: the agent is not notified (design.md §5.1), so the command
 /// still returns `Ok(())`. The `Result` return type is kept because
 /// Tauri requires it for async commands that borrow managed state.
@@ -102,7 +104,10 @@ pub async fn report_unread(
         Err(_) => None,
     };
 
-    match validate::validate(report, &label, &caller_url, |_id| service_url) {
+    match validate::validate(report, &label, &caller_url, {
+        let service_url = service_url.clone();
+        move |_id| service_url
+    }) {
         Ok(valid_report) => {
             services
                 .inner()
@@ -118,8 +123,14 @@ pub async fn report_unread(
             if let Some(liveness) = app.try_state::<Arc<LivenessRuntime>>() {
                 liveness.record_report(valid_report.service_id());
             }
+            let count = match valid_report.count() {
+                Some(count) => count.to_string(),
+                None => "none".to_string(),
+            };
             tracing::debug!(
                 service_id = %valid_report.service_id(),
+                count = %count,
+                recipe_id = %valid_report.recipe_id(),
                 "accepted unread report"
             );
             dispatch_notification(services.inner(), dispatcher.inner(), &valid_report).await;
@@ -141,9 +152,15 @@ pub async fn report_unread(
             Ok(())
         }
         Err(err) => {
+            let service_origin = service_url
+                .as_ref()
+                .map(|url| url.origin().ascii_serialization())
+                .unwrap_or_else(|| "none".to_string());
             tracing::debug!(
                 service_id = %requested_service_id,
                 rejection = err.kind(),
+                caller_origin = %caller_url.origin().ascii_serialization(),
+                service_origin = %service_origin,
                 "rejected unread report"
             );
             Ok(())

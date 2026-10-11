@@ -497,7 +497,9 @@ export interface Recipe {
   - `gmail`:
     - Matches `mail.google.com`. `defaultProfile: 'default'`.
     - Uses `fetch` of `/mail/u/<segment>/feed/atom`, where `<segment>` comes from the service URL.
+    - A configured URL whose host is `gmail.com` or `www.gmail.com` is rewritten at config parse to `https://mail.google.com`, with path `/mail/` when the original path is empty or `/`. Other paths are kept. This is so the Gmail recipe matches and the page origin agrees with the configured origin.
     - On first use, validates `status 200`, not redirected, and a parseable `<fullcount>`. If validation fails, it switches to the title strategy for the rest of the page's life (§7.1).
+    - If the feed `fetch` rejects (network error, CSP, or a cross-origin rejection), `mode` stays unchanged so the next read retries the feed. A title matching the Gmail count pattern is returned as that count with `messages: []`. A title with no count returns `count: null`.
     - `messages` come from feed entries. `id` is a hash of the entry id; `link` is a deep link `#all/<message id>` on the service URL.
     - `watch` uses `watchTitle`, so a change to the title triggers a fetch.
   - `icloud`: matches `www.icloud.com/mail`, `isolated`, title strategy.
@@ -505,7 +507,7 @@ export interface Recipe {
   - `generic`: matches any URL, `isolated`, title pattern `\((\d+)\)`.
 - **The `count = null` rule** (D1) differs by recipe:
   - The title strategy returns `0` when the title contains no count; a same-origin login page cannot be told apart from an empty inbox.
-  - Specific recipes return `null` when they detect a signed-out state. Gmail detects it from a feed redirect or a 401 together with a title that has no count. The iCloud and Outlook detection rules are defined in M2 from observation of the real pages (task 2.8).
+  - Specific recipes return `null` when they detect a signed-out state. Gmail detects it from a feed redirect or a 401 together with a title that has no count (D1, unchanged). A rejected feed fetch is not that signal: it uses the title count when one is present, and `null` only when the title has no count. The iCloud and Outlook detection rules are defined in M2 from observation of the real pages (task 2.8).
 - **Notification stub:** `window.Notification` is replaced with a class whose `permission` is `'denied'`, whose `requestPermission()` resolves to `'denied'`, and whose constructor throws. It is installed before any page script runs.
 
 ---
@@ -585,7 +587,7 @@ page DOM/title ─(MutationObserver)─▶ recipe.read()
 
 ### 5.2 Reporting and logging
 
-- `tracing` writes to stderr in development and to a daily file in `{data_dir}/logs/` in all builds.
+- `tracing` writes to stderr. The default filter is `warn`. Set `RUST_LOG` to raise it (for example `RUST_LOG=eluma_lib::agent_bridge=debug,eluma_lib::services=debug`). A daily file under `{data_dir}/logs/` is not written.
 - Every `AppError` that reaches a command is serialized as `{ kind, message }` and shown in the settings UI.
 - The settings Diagnostics view shows repeated staleness per service (§9.4).
 

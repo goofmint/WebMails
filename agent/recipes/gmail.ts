@@ -241,10 +241,17 @@ export function createGmailRecipe(): Recipe {
       try {
         fetched = await fetchText(ctx, gmailFeedPath(ctx.serviceUrl));
       } catch {
-        // A fetch failure (network error, or a cross-origin rejection from
-        // `SameOriginFetch`, e.g. a login redirect that left Gmail's origin)
-        // is a failed read: report `count: null` for this cycle (design.md
-        // §5.1). It never changes `mode`, so the next read retries the feed.
+        // A fetch failure (network error, CSP `connect-src`, or a
+        // cross-origin rejection from `SameOriginFetch`) never changes
+        // `mode`, so the next read retries the feed. A title that already
+        // carries a count is a signed-in inbox (design.md §2.2.14); use
+        // that count instead of discarding it. No count still means
+        // `null` (D1) — a signed-out page and an empty inbox are not
+        // distinguished here.
+        const fromTitle = titleCount(ctx.document, GMAIL_TITLE_PATTERN);
+        if (fromTitle !== null) {
+          return { count: fromTitle, messages: [] };
+        }
         return { count: null };
       }
 

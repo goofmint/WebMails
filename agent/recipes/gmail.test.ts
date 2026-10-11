@@ -357,7 +357,7 @@ describe("gmail recipe", () => {
   });
 
   describe("read() — fetch rejection (cross-origin, etc.)", () => {
-    it("reports count null without changing mode when ctx.fetch rejects", async () => {
+    it("reports the title count without changing mode when ctx.fetch rejects", async () => {
       const recipe = createGmailRecipe();
       const ctx = makeContext({
         title: "Inbox (1) - someone@example.com - Gmail",
@@ -365,9 +365,42 @@ describe("gmail recipe", () => {
       });
 
       const result = await recipe.read(ctx);
-      expect(result).toEqual({ count: null });
+      expect(result).toEqual({ count: 1, messages: [] });
       // Unvalidated + a plain fetch rejection is not a validation failure:
       // the recipe is still willing to try the feed again next time.
+      expect(recipe.describe(SERVICE_URL).strategy).toBe("fetch");
+    });
+
+    it("reports count null when ctx.fetch rejects and the title has no count", async () => {
+      const recipe = createGmailRecipe();
+      const ctx = makeContext({
+        title: "Gmail",
+        fetchImpl: () => Promise.reject(new Error("[SameOriginFetch] rejected cross-origin")),
+      });
+
+      const result = await recipe.read(ctx);
+      expect(result).toEqual({ count: null });
+      expect(recipe.describe(SERVICE_URL).strategy).toBe("fetch");
+    });
+
+    it("recovers from a rejected fetch to a valid feed on the next read", async () => {
+      const recipe = createGmailRecipe();
+      let reject = true;
+      const ctx = makeContext({
+        title: "Gmail",
+        fetchImpl: () =>
+          reject
+            ? Promise.reject(new Error("[SameOriginFetch] rejected cross-origin"))
+            : Promise.resolve(makeFetchResponse({ status: 200, body: feedValid })),
+      });
+
+      const failed = await recipe.read(ctx);
+      expect(failed).toEqual({ count: null });
+      expect(recipe.describe(SERVICE_URL).strategy).toBe("fetch");
+
+      reject = false;
+      const recovered = await recipe.read(ctx);
+      expect(recovered.count).toBe(3);
       expect(recipe.describe(SERVICE_URL).strategy).toBe("fetch");
     });
   });
