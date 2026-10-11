@@ -57,7 +57,7 @@ use crate::icons::{self, CachedIcon, IconOverride, IconService};
 use crate::platform::app_nap::AppNapGuard;
 use crate::profile::{self, PlatformProfileBackend, ProfileBackend, ProfileKey};
 use crate::state::{StalenessStats, StateStore};
-use crate::unread::{emit_if_changed, ServiceStatus, StatusChanged, StatusStore};
+use crate::unread::{emit_if_changed, AttentionReason, ServiceStatus, StatusChanged, StatusStore};
 
 /// Delay between each service's staggered creation at startup (design.md
 /// §2.2.5).
@@ -1298,13 +1298,26 @@ impl ServiceManager {
             if payload.event() != PageLoadEvent::Finished {
                 return;
             }
+            let page_url = payload.url().clone();
             let changed = {
                 let mut store = match status_store.lock() {
                     Ok(guard) => guard,
                     Err(poisoned) => poisoned.into_inner(),
                 };
-                store.record_page_load(&id, payload.url(), &service_origin)
+                store.record_page_load(&id, &page_url, &service_origin)
             };
+            if matches!(
+                changed.as_ref().map(|changed| &changed.status),
+                Some(ServiceStatus::NeedsAttention {
+                    reason: AttentionReason::OffOrigin,
+                })
+            ) {
+                tracing::debug!(
+                    service_id = %id,
+                    page_origin = %page_url.origin().ascii_serialization(),
+                    "page load marked OffOrigin"
+                );
+            }
             emit_status_changed(&app_handle, changed);
         })
     }

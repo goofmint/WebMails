@@ -126,11 +126,17 @@ This is the one rule every recipe must get right (`design.md` §2.2.14 "D1",
   Gmail's title-only fallback both convert a `titleCount() === null` into
   `{ count: 0, messages: [] }`, not `{ count: null }`.
 - A recipe should only return `{ count: null }` when it has an
-  **independent** way to detect a signed-out/unreachable state. Gmail's is a
-  same-origin redirect or a `401` from the feed fetch, _combined with_ the
-  title having no count either (`agent/recipes/gmail.ts`'s `read()`) —
-  either signal alone is not enough, because a `401`/redirect can also occur
-  transiently on a page that already has a count in its title.
+  **independent** way to detect a signed-out/unreachable state. Gmail's
+  signed-out signal (D1) is a same-origin redirect or a `401` from the feed
+  fetch, _combined with_ the title having no count
+  (`agent/recipes/gmail.ts`'s `read()`) — either signal alone is not enough,
+  because a `401`/redirect can also occur transiently on a page that already
+  has a count in its title. A **rejected** feed fetch is different: it does
+  not change mode, and if the title matches `GMAIL_TITLE_PATTERN` the recipe
+  returns that count with `messages: []`. It returns `{ count: null }` only
+  when the title has no count. `count: 0` is still the title-strategy
+  reading of an inbox whose title has no parenthesized number, not the
+  reject path.
 
 If you don't have such a signal, don't invent one — return `0` when there's
 no count found, same as `generic`.

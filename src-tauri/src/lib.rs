@@ -40,8 +40,22 @@ fn current_content_rect(
     Ok(layout::content_rect(width, height))
 }
 
+/// `tracing` has no subscriber unless one is installed. Debug lines such
+/// as `accepted unread report` are otherwise discarded. Stderr only; the
+/// default filter is `warn`, overridden by `RUST_LOG`.
+fn init_tracing() {
+    use tracing_subscriber::EnvFilter;
+
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .try_init();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    init_tracing();
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![

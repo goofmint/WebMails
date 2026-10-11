@@ -163,15 +163,14 @@ pub struct ValidMessageRef {
 /// `count` and `messages` are also read by `notify::diff::evaluate`;
 /// `icon_candidates` is read by `report_unread`'s icon-resolution path
 /// (design.md §2.2.10) via [`ValidReport::icon_candidates`].
-/// `recipe_id` and `observed_at` have no consumer yet (a later task:
-/// notification text), so they stay `#[allow(dead_code)]` rather than
-/// fabricating a reader that doesn't exist.
+/// `observed_at` has no consumer yet (a later task: notification text),
+/// so it stays `#[allow(dead_code)]` rather than fabricating a reader
+/// that doesn't exist. `recipe_id` is read for the success log line.
 #[derive(Debug, Clone)]
 pub struct ValidReport {
     service_id: ServiceId,
     count: Option<u32>,
     messages: Vec<ValidMessageRef>,
-    #[allow(dead_code)]
     recipe_id: String,
     #[allow(dead_code)]
     observed_at: u64,
@@ -189,6 +188,11 @@ impl ValidReport {
     /// determine one.
     pub fn count(&self) -> Option<u32> {
         self.count
+    }
+
+    /// The report's recipe id, for the success log line.
+    pub fn recipe_id(&self) -> &str {
+        &self.recipe_id
     }
 
     /// The report's validated message references, in report order

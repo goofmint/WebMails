@@ -44,6 +44,7 @@ tokio = { version = "1", features = ["time", "rt", "macros"] }
 toml = "1.1.6"
 toml_edit = "0.25"
 tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 url = { version = "2.5.8", features = ["serde"] }
 uuid = { version = "1.26.1", features = ["serde", "v5"] }
 

@@ -141,7 +141,7 @@ For each item, record date, platform (macOS 14+ or Windows 11) and result (pass/
 
 - [ ] With a real service configured (e.g. Gmail or iCloud) and its webview created, that webview's own DevTools console has `window.__ELUMA__` present right after load, shaped as `{ serviceId, serviceUrl, reportIntervalMs: 30000, reconcileIntervalMs }` (design.md §2.2.6) (macOS)
 - [ ] Same `window.__ELUMA__` shape check (Windows 11)
-- [ ] From that same service webview's DevTools console, `window.__TAURI_INTERNALS__.invoke('report_unread', { report: { serviceId: '<that service's id>', count: 1, messages: [], recipeId: 'generic', observedAt: Date.now(), iconCandidates: [] } })` resolves, and Rust's log (stderr in dev, or `{data_dir}/logs/`) shows a debug line `accepted unread report` naming that service id (macOS)
+- [ ] From that same service webview's DevTools console, `window.__TAURI_INTERNALS__.invoke('report_unread', { report: { serviceId: '<that service's id>', count: 1, messages: [], recipeId: 'generic', observedAt: Date.now(), iconCandidates: [] } })` resolves, and Rust's stderr log shows a debug line `accepted unread report` naming that service id (macOS). Debug lines are off unless the process is started with `RUST_LOG=warn,eluma_lib::agent_bridge=debug,eluma_lib::services=debug` (default filter is `warn`; nothing is written under `{data_dir}/logs/`)
 - [ ] Same successful invoke and matching debug log line (Windows 11)
 - [ ] The same invoke from the **shell** webview's own DevTools console (not a service's) is rejected — `shell` is not a `svc-<id>` webview and holds no runtime capability for `report_unread` (macOS)
 - [ ] Same shell-origin rejection (Windows 11)
@@ -165,6 +165,34 @@ Task #87 (`SERVICE_USER_AGENT`, macOS only): for each item, record date, platfor
 
 - [ ] Signed into Gmail on the default host (`MultiwebviewHost`), the service webview loads the normal Gmail UI, not the "this browser version is no longer supported" page (macOS)
 - [ ] Same check built with `--features host-child-windows` (macOS)
+
+### Task #97 — Gmail always shows Needs attention
+
+One signed-in run should be enough to name the cause. Start the dev build with `RUST_LOG=warn,eluma_lib::agent_bridge=debug,eluma_lib::services=debug` so the lines below appear on stderr. In the Gmail webview's DevTools, run the feed fetch the same way the agent does (`mode: "same-origin"`, `credentials: "same-origin"`). Record every row before checking the completion items.
+
+Collect:
+
+- configured service URL
+- `location.href`
+- `document.title`
+- feed `fetch` result: `status`, `redirected`, `url`, `content-type`, or the exception message
+- any CSP `connect-src` violation in the console
+- Diagnostics: attention reason, `hasReported`, `lastReportAgeMs`
+- stderr lines `accepted unread report` (fields `count`, `recipe_id`) and, if present, `rejected unread report` (`caller_origin`, `service_origin`) and `page load marked OffOrigin` (`page_origin` only — no path)
+
+| Observation                                                                                                         | Verdict                                                                                                                                                                           |
+| ------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `offOrigin`, configured URL host is `gmail.com` or `www.gmail.com`                                                  | Fixed by config normalization to `https://mail.google.com/mail/` (or the original path when it is not `/`). Re-save or restart so the parser runs.                                |
+| `offOrigin`, configured URL is already `mail.google.com`, and the page stays on `accounts.google.com` after sign-in | Session or cookie problem. Out of scope for the recipe; file a separate ticket.                                                                                                   |
+| `reportedNone`, `fetch` throws, title contains a count `(N) - … - Gmail`                                            | Fixed by the reject branch using that title count.                                                                                                                                |
+| `reportedNone`, `fetch` always throws, unread is 0, title has no count                                              | Not fixed yet. Needs the observed title (signed-in empty inbox shape) before a `0` reading can be added to the reject branch only. Do not apply it to the redirect/401 path (D1). |
+| `reportedNone`, same-origin redirect or 401 while signed in                                                         | Check `gmailFeedPath`'s account segment and whether `?authuser=` is required. Record the response; do not guess a path change.                                                    |
+| `hasReported: false` keeps going                                                                                    | Injection or bootstrap, not this recipe. Investigate separately.                                                                                                                  |
+
+Completion (after the fix is in a build the owner runs):
+
+- [ ] A signed-in Gmail shows the correct unread count (macOS)
+- [ ] Signed out, the same service shows `Needs attention` (`reportedNone` or `offOrigin`), not a stale count (macOS)
 
 ## M3 — Background survival
 
